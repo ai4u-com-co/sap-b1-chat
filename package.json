@@ -14,7 +14,7 @@
     "@ai-sdk/react": "^3.0.193",
     "@ai4u/design-system": "github:donchelo/sistemaDiseno#v1.1.0",
     "@ai4u/mc-sso": "github:ai4u-com-co/mc-sso#v1.1.0",
-    "@ai4u/platform": "github:ai4u-com-co/platform#v0.3.1",
+    "@ai4u/platform": "github:ai4u-com-co/platform#v0.3.2",
     "@supabase/supabase-js": "^2.106.2",
     "ai": "^6.0.191",
     "next": "^15.3.2",
