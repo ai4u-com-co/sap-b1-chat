@@ -23,7 +23,7 @@ function resolveAuth(req: Request): { tenantId: string; sapApiKey: string; userI
   }
   return null
 }
-import { BackendClient } from "@/lib/backend-client"
+import { BackendClient } from "@ai4u/contracts"
 import { ENTITY_MAP } from "@ai4u/contracts"
 import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type CatalogEntry } from "@/lib/chat/system-prompt"
 import { fetchSapContext } from "@/lib/chat/sap-context"

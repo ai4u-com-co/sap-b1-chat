@@ -1,4 +1,4 @@
-import type { BackendClient } from "@/lib/backend-client"
+import type { BackendClient } from "@ai4u/contracts"
 
 export interface Warehouse { code: string; name: string }
 export interface SalesPerson { code: number; name: string }
