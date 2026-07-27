@@ -1,3 +1,5 @@
+import Link from "next/link"
+
 export default function NotFound() {
   return (
     <div
@@ -16,7 +18,7 @@ export default function NotFound() {
       <p style={{ color: "#666", maxWidth: 420 }}>
         La página que buscas no existe o fue movida.
       </p>
-      <a
+      <Link
         href="/"
         style={{
           padding: "0.5rem 1.25rem",
@@ -27,7 +29,7 @@ export default function NotFound() {
         }}
       >
         Volver al inicio
-      </a>
+      </Link>
     </div>
   )
 }
