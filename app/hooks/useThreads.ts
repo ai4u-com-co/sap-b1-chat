@@ -73,7 +73,6 @@ export function useThreads() {
       setActiveThreadId(first.id)
       writeStorage([first])
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Persiste el hilo activo

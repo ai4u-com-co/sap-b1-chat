@@ -28,9 +28,6 @@ import {
 } from "@/lib/chat/models"
 
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:4100"
-
 const TOOL_LABELS: Record<string, string> = {
   consultar_sql:       "Consultando SQL SAP",
   obtener_documento:   "Obteniendo documento",
@@ -140,7 +137,6 @@ export default function ChatPage() {
 
 // ─── ChatUI ───────────────────────────────────────────────────────────────────
 function ChatUI() {
-  const apiKey = "" // kept for hook compat — API key is now server-side only
   const [tenantName, setTenantName] = useState("")
   const [inputValue, setInputValue] = useState("")
   const [search, setSearch] = useState("")
@@ -799,26 +795,36 @@ function ToolCallStep({
   onRetry?: () => void
 }) {
   const [expanded, setExpanded] = useState(false)
-  if (!isToolUIPart(part)) return null
+
+  // isToolUIPart(part) decide si el resto del componente tiene algo que
+  // renderizar, pero los Hooks deben llamarse siempre en el mismo orden —
+  // por eso useElapsed corre acá, antes de cualquier return condicional,
+  // con isPending=false (seguro: useElapsed(false) resetea a 0 y no arranca
+  // el interval) cuando part no es un tool UI part (bug real corregido:
+  // react-hooks/rules-of-hooks, "Hook llamado condicionalmente").
+  const isPart = isToolUIPart(part)
+  const inv = isPart
+    ? (part as unknown as {
+        state: string
+        input?: unknown
+        output?: {
+          sapDuration?: number
+          error?: { code?: string; message?: string; retryable?: boolean }
+          [k: string]: unknown
+        }
+        errorText?: string
+      })
+    : null
+  const outputError  = inv?.output?.error
+  const isError      = inv?.state === "output-error" || !!outputError
+  const isDone       = inv?.state === "output-available" && !outputError
+  const isPending    = isPart && !isDone && !isError
+  const elapsed      = useElapsed(isPending)
+
+  if (!isPart || !inv) return null
 
   const name = getToolName(part)
   const label = TOOL_LABELS[name] ?? name
-  const inv = part as unknown as {
-    state: string
-    input?: unknown
-    output?: {
-      sapDuration?: number
-      error?: { code?: string; message?: string; retryable?: boolean }
-      [k: string]: unknown
-    }
-    errorText?: string
-  }
-
-  const outputError  = inv.output?.error
-  const isError      = inv.state === "output-error" || !!outputError
-  const isDone       = inv.state === "output-available" && !outputError
-  const isPending    = !isDone && !isError
-  const elapsed      = useElapsed(isPending)
 
   const sapDuration  = inv.output?.sapDuration
   const isRetryable  = outputError?.retryable === true

@@ -36,6 +36,9 @@ export default function Error({
         </p>
       )}
       <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages -- deliberado:
+            tras un error de render, queremos una recarga completa (limpia cualquier
+            estado de React que haya quedado roto), no navegación client-side de next/link */}
         <a
           href="/"
           style={{
