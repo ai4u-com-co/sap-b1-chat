@@ -3,11 +3,14 @@
 // el servidor (route.ts) como el cliente (page.tsx), así que este archivo es
 // data pura: sin imports de servidor, seguro para el bundle del navegador.
 //
-// Anclado a la referencia oficial de la API de Claude (jun-2026):
-// - effort: low|medium|high|xhigh|max. xhigh solo Opus 4.7+/Fable; max Fable/
-//   Opus 4.6+/Sonnet 4.6. Haiku 4.5 NO soporta effort (da error).
-// - thinking adaptive: Fable/Opus 4.8/4.7/4.6/Sonnet 4.6. Haiku 4.5 no.
-// - pricing por 1M tokens (input/output).
+// Anclado a la referencia oficial de la API de Claude (jul-2026):
+// - effort: low|medium|high|xhigh|max. Sonnet 5 y Opus 5 soportan la escalera
+//   completa. Haiku 4.5 NO soporta effort (da error).
+// - thinking adaptive: Opus 5/Sonnet 5. Opus 5 piensa por defecto aunque se
+//   omita `thinking`; igual mandamos {type:"adaptive"} explícito. Haiku 4.5 no.
+// - pricing por 1M tokens (input/output). Sonnet 5 tiene precio introductorio
+//   $2/$10 vigente hasta 2026-08-31; aquí se usa el precio estándar $3/$15
+//   para que el cost-tracking no quede desactualizado al vencer la promo.
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
 
@@ -44,24 +47,24 @@ export const MODELS: Record<string, ModelCapability> = {
     thinking: "none",
     efforts: [],
   },
-  "claude-sonnet-4.6": {
-    id: "claude-sonnet-4.6",
-    apiSlug: "claude-sonnet-4-6",
-    name: "Claude Sonnet 4.6",
+  "claude-sonnet-5": {
+    id: "claude-sonnet-5",
+    apiSlug: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
     label: "Balanceado",
-    description: "Claude Sonnet 4.6 — ideal para la mayoría de consultas SAP",
+    description: "Claude Sonnet 5 — ideal para la mayoría de consultas SAP",
     contextK: 1000,
     pricing: { input: 3.0, output: 15.0 },
     thinking: "adaptive",
-    efforts: ["low", "medium", "high", "max"],
+    efforts: ["low", "medium", "high", "xhigh", "max"],
     defaultEffort: "medium",
   },
-  "claude-opus-4.8": {
-    id: "claude-opus-4.8",
-    apiSlug: "claude-opus-4-8",
-    name: "Claude Opus 4.8",
+  "claude-opus-5": {
+    id: "claude-opus-5",
+    apiSlug: "claude-opus-5",
+    name: "Claude Opus 5",
     label: "Máxima IA ⚡",
-    description: "Claude Opus 4.8 — análisis complejos y razonamiento profundo. Más costoso.",
+    description: "Claude Opus 5 — análisis complejos y razonamiento profundo. Más costoso.",
     contextK: 1000,
     pricing: { input: 5.0, output: 25.0 },
     thinking: "adaptive",
@@ -72,8 +75,8 @@ export const MODELS: Record<string, ModelCapability> = {
 
 export const MODEL_LIST: ModelCapability[] = [
   MODELS["claude-haiku-4.5"],
-  MODELS["claude-sonnet-4.6"],
-  MODELS["claude-opus-4.8"],
+  MODELS["claude-sonnet-5"],
+  MODELS["claude-opus-5"],
 ]
 
 export const DEFAULT_MODEL_ID = "claude-haiku-4.5"
