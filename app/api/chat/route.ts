@@ -10,7 +10,7 @@ import {
 import { z } from "zod"
 import type { UIMessage, ModelMessage, UIMessageStreamWriter } from "ai"
 import { getTenantId, getApiKey } from "@/app/lib/session"
-import { resolveModelConfig, calculateCostWithCacheForModel } from "@/lib/chat/models"
+import { resolveModelConfig, calculateCostWithCacheForModel, getModel, DEFAULT_MODEL_ID } from "@/lib/chat/models"
 import { verifyInternalSecret, getOutgoingInternalSecret } from "@/lib/internal-auth"
 
 function resolveAuth(req: Request): { tenantId: string; sapApiKey: string; userId?: string } | null {
@@ -267,7 +267,15 @@ export const POST = withApiHandler(async (req: Request) => {
   // modelo, nunca produce un 400). El cliente puede pedir cualquier modelo/effort.
   const requestedModel = typeof body.model === "string" ? body.model : ""
   const requestedEffort = typeof body.effort === "string" ? body.effort : undefined
-  const { model: modelCap, effort, thinking } = resolveModelConfig(requestedModel, requestedEffort)
+
+  // Auto-routing por complejidad: si la consulta matchea keywords de reporte/KPI
+  // y el modelo resuelto es el más económico (Haiku, sin razonamiento), escala a
+  // Sonnet 5. NUNCA degrada una elección ya en Sonnet/Opus — solo sube desde el
+  // piso. Antes, isComplexQuery solo ampliaba maxSteps y dejaba el modelo intacto.
+  const baseModel = getModel(requestedModel)
+  const autoEscalated = isComplexQuery && baseModel.id === DEFAULT_MODEL_ID
+  const effectiveModel = autoEscalated ? "claude-sonnet-5" : requestedModel
+  const { model: modelCap, effort, thinking } = resolveModelConfig(effectiveModel, requestedEffort)
   const selectedModel = modelCap.id
   const maxSteps = isComplexQuery ? 20 : 12
 
@@ -297,6 +305,12 @@ export const POST = withApiHandler(async (req: Request) => {
     execute: async (ctx) => {
       writer = ctx.writer
       writer.write({ type: "data-status", data: { text: "Conectando a SAP B1…" } } as never)
+      if (autoEscalated) {
+        writer.write({
+          type: "data-status",
+          data: { text: `Consulta compleja detectada — escalando a ${modelCap.name}…` },
+        } as never)
+      }
       const [sapCtx, catalogResult] = await Promise.all([
         fetchSapContext(client, tenantId),
         client.catalogList().catch(() => null),
