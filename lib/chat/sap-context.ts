@@ -20,6 +20,15 @@ const RELEVANT_TABLES = [
 ]
 
 interface CacheEntry { context: SapContext; expiresAt: number }
+// Cache en memoria (Map de módulo), TTL 1h. Best-effort, NO compartido entre
+// instancias serverless de Vercel: cada cold start empieza en frío y vuelve a
+// traer los maestros SAP una vez. Deliberadamente no se migró a un cache
+// externo compartido (Vercel KV/Upstash Redis) porque eso requiere provisionar
+// infra + secretos nuevos, que en este ecosistema exigen autorización humana
+// explícita (ver reglas de "Credenciales, permisos y pasos manuales" en
+// CLAUDE.md) — no algo para decidir de forma unilateral en un refactor de
+// cache. Si el costo de los cold starts se vuelve un problema medido (no
+// especulado), ahí sí vale la pena abrir esa conversación con el equipo.
 const cache = new Map<string, CacheEntry>()
 const TTL_MS = 60 * 60 * 1000
 
