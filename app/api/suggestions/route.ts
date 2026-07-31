@@ -1,4 +1,3 @@
-import { createAnthropic } from "@ai-sdk/anthropic"
 import { withApiHandler } from "@ai4u/platform/http"
 import { generateText, Output } from "ai"
 import { z } from "zod"
@@ -6,6 +5,7 @@ import { getTenantProfile } from "@/lib/chat/tenant-profiles"
 import { getTenantBackend } from "@/lib/tenant-backends"
 import { getApiKey, getTenantId } from "@/app/lib/session"
 import { verifyInternalSecret } from "@/lib/internal-auth"
+import { MODELS } from "@/lib/chat/models"
 
 // ─── /api/suggestions ────────────────────────────────────────────────────────
 // Genera 4 preguntas estratégicas de negocio para el tenant activo mediante una
@@ -84,14 +84,6 @@ export const POST = withApiHandler(async (req: Request) => {
     return Response.json({ questions: MAGDALENA_SUGGESTIONS, generatedAt: Date.now(), source: "static" })
   }
 
-  const anthropicKey =
-    process.env[`${tenantId.toUpperCase()}_ANTHROPIC_API_KEY`] ??
-    process.env.ANTHROPIC_API_KEY ??
-    ""
-  if (!anthropicKey) {
-    return Response.json({ questions: FALLBACK, generatedAt: Date.now(), source: "fallback" })
-  }
-
   const { tenantName } = body as { tenantName?: string }
   const resolvedTenant = tenantName?.trim() || tenantId
   const today = new Date().toLocaleDateString("es-CO", {
@@ -100,9 +92,9 @@ export const POST = withApiHandler(async (req: Request) => {
   })
 
   try {
-    const anthropic = createAnthropic({ apiKey: anthropicKey })
     const { output } = await generateText({
-      model: anthropic("claude-haiku-4-5"),
+      // Enrutado por Vercel AI Gateway (OIDC) — ver nota en app/api/chat/route.ts.
+      model: MODELS["claude-haiku-4.5"].gatewaySlug,
       output: Output.object({
         schema: z.object({
           questions: z.array(z.string()).describe("Exactamente 4 preguntas estratégicas"),

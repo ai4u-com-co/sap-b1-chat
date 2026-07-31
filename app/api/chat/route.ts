@@ -1,4 +1,3 @@
-import { createAnthropic } from "@ai-sdk/anthropic"
 import { withApiHandler } from "@ai4u/platform/http"
 import { supabase } from "@/lib/supabase"
 import {
@@ -185,14 +184,6 @@ export const POST = withApiHandler(async (req: Request) => {
   // discoveredTables — estado por request
   const discoveredTables = new Set<string>(CORE_TABLES)
 
-  // Anthropic key per tenant
-  const anthropicKey =
-    process.env[`${tenantId.toUpperCase()}_ANTHROPIC_API_KEY`] ??
-    process.env.ANTHROPIC_API_KEY ??
-    ""
-
-  const anthropic = createAnthropic({ apiKey: anthropicKey })
-
   let writer!: UIMessageStreamWriter
 
   const stream = createUIMessageStream({
@@ -229,7 +220,14 @@ export const POST = withApiHandler(async (req: Request) => {
       ]
 
       const result = streamText({
-        model: anthropic(modelCap.apiSlug),
+        // Enrutado por Vercel AI Gateway (OIDC) en vez de createAnthropic +
+        // API key directa. Un string "provider/model" enruta automáticamente
+        // — sin gateway() ni token manual: el AI SDK resuelve el auth solo
+        // (AI_GATEWAY_API_KEY si existe, si no VERCEL_OIDC_TOKEN). Verificado
+        // que providerOptions.anthropic.thinking/effort se preserva igual
+        // enrutando por gateway (docs: vercel.com/docs/ai-gateway/models-and-
+        // providers/reasoning) — no hace falta tocar esa parte.
+        model: modelCap.gatewaySlug,
         messages: [...systemMessages, ...allMessages],
         stopWhen: stepCountIs(maxSteps),
         onFinish: async ({ text, toolCalls, toolResults }) => {
@@ -275,6 +273,15 @@ export const POST = withApiHandler(async (req: Request) => {
           anthropic: {
             ...(thinking ? { thinking } : {}),
             ...(effort ? { effort } : {}),
+          },
+          // Con la migración a Gateway se perdió la separación por API key
+          // propia de Anthropic por tenant (${TENANT}_ANTHROPIC_API_KEY) — todo
+          // pasa ahora por el gateway único del proyecto Vercel. Se reemplaza
+          // por tags/user para que el dashboard de AI Gateway pueda desglosar
+          // costo por tenant (Usage & Budgets → filtrar por tag).
+          gateway: {
+            user: tenantId,
+            tags: [`tenant:${tenantId}`, "feature:sap-chat"],
           },
         },
         tools: {
