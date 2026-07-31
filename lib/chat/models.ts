@@ -11,6 +11,14 @@
 // - pricing por 1M tokens (input/output). Sonnet 5 tiene precio introductorio
 //   $2/$10 vigente hasta 2026-08-31; aquí se usa el precio estándar $3/$15
 //   para que el cost-tracking no quede desactualizado al vencer la promo.
+//
+// gatewaySlug: verificado contra el catálogo real de Vercel AI Gateway
+// (GET https://ai-gateway.vercel.sh/v1/models, público, sin auth) el
+// 2026-09-27 (re-verificado al rebasar esta migración sobre el catálogo
+// jul-2026 de Sonnet 5/Opus 5) — NO derivar por heurística de apiSlug: para
+// estos 3 modelos coincide 1:1 con `anthropic/${id}`, pero si se agrega un
+// modelo nuevo hay que volver a chequear contra ese endpoint antes de
+// inventar el slug — uno mal formado devuelve 400 y rompe el chat.
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
 
@@ -21,6 +29,8 @@ export interface ModelCapability {
   id: string
   /** Slug de la API de Anthropic (con guiones). */
   apiSlug: string
+  /** Slug de Vercel AI Gateway ("anthropic/<id>") — ver nota arriba. */
+  gatewaySlug: string
   /** Nombre del modelo para mostrar (pill de costo). */
   name: string
   /** Etiqueta corta de la "tier" en el selector. */
@@ -39,6 +49,7 @@ export const MODELS: Record<string, ModelCapability> = {
   "claude-haiku-4.5": {
     id: "claude-haiku-4.5",
     apiSlug: "claude-haiku-4-5",
+    gatewaySlug: "anthropic/claude-haiku-4.5",
     name: "Claude Haiku 4.5",
     label: "Rápido",
     description: "Claude Haiku 4.5 — consultas simples y rápidas, menor costo (predeterminado)",
@@ -50,6 +61,7 @@ export const MODELS: Record<string, ModelCapability> = {
   "claude-sonnet-5": {
     id: "claude-sonnet-5",
     apiSlug: "claude-sonnet-5",
+    gatewaySlug: "anthropic/claude-sonnet-5",
     name: "Claude Sonnet 5",
     label: "Balanceado",
     description: "Claude Sonnet 5 — ideal para la mayoría de consultas SAP",
@@ -62,6 +74,7 @@ export const MODELS: Record<string, ModelCapability> = {
   "claude-opus-5": {
     id: "claude-opus-5",
     apiSlug: "claude-opus-5",
+    gatewaySlug: "anthropic/claude-opus-5",
     name: "Claude Opus 5",
     label: "Máxima IA ⚡",
     description: "Claude Opus 5 — análisis complejos y razonamiento profundo. Más costoso.",
