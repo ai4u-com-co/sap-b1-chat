@@ -8,6 +8,14 @@
 //   Opus 4.6+/Sonnet 4.6. Haiku 4.5 NO soporta effort (da error).
 // - thinking adaptive: Fable/Opus 4.8/4.7/4.6/Sonnet 4.6. Haiku 4.5 no.
 // - pricing por 1M tokens (input/output).
+//
+// gatewaySlug: verificado contra el catálogo real de Vercel AI Gateway
+// (GET https://ai-gateway.vercel.sh/v1/models, público, sin auth) el
+// 2026-07-30 — NO se derivó por heurística de apiSlug (guion→punto no es
+// consistente: Haiku usa punto "4.5" pero el apiSlug de Anthropic usa guion
+// "4-5"; modelos sin minor version como Sonnet/Opus "5" no llevan punto).
+// Si se agrega un modelo nuevo, volver a verificar contra ese endpoint antes
+// de inventar el slug — un slug mal formado devuelve 400 y rompe el chat.
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max"
 
@@ -18,6 +26,8 @@ export interface ModelCapability {
   id: string
   /** Slug de la API de Anthropic (con guiones). */
   apiSlug: string
+  /** Slug de Vercel AI Gateway ("anthropic/<id>") — ver nota arriba. */
+  gatewaySlug: string
   /** Nombre del modelo para mostrar (pill de costo). */
   name: string
   /** Etiqueta corta de la "tier" en el selector. */
@@ -36,6 +46,7 @@ export const MODELS: Record<string, ModelCapability> = {
   "claude-haiku-4.5": {
     id: "claude-haiku-4.5",
     apiSlug: "claude-haiku-4-5",
+    gatewaySlug: "anthropic/claude-haiku-4.5",
     name: "Claude Haiku 4.5",
     label: "Rápido",
     description: "Claude Haiku 4.5 — consultas simples y rápidas, menor costo (predeterminado)",
@@ -47,6 +58,7 @@ export const MODELS: Record<string, ModelCapability> = {
   "claude-sonnet-4.6": {
     id: "claude-sonnet-4.6",
     apiSlug: "claude-sonnet-4-6",
+    gatewaySlug: "anthropic/claude-sonnet-4.6",
     name: "Claude Sonnet 4.6",
     label: "Balanceado",
     description: "Claude Sonnet 4.6 — ideal para la mayoría de consultas SAP",
@@ -59,6 +71,7 @@ export const MODELS: Record<string, ModelCapability> = {
   "claude-opus-4.8": {
     id: "claude-opus-4.8",
     apiSlug: "claude-opus-4-8",
+    gatewaySlug: "anthropic/claude-opus-4.8",
     name: "Claude Opus 4.8",
     label: "Máxima IA ⚡",
     description: "Claude Opus 4.8 — análisis complejos y razonamiento profundo. Más costoso.",
