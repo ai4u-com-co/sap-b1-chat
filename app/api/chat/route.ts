@@ -10,7 +10,7 @@ import {
 import { z } from "zod"
 import type { UIMessage, ModelMessage, UIMessageStreamWriter } from "ai"
 import { getTenantId, getApiKey } from "@/app/lib/session"
-import { resolveModelConfig, calculateCostWithCacheForModel } from "@/lib/chat/models"
+import { resolveModelConfig, calculateCostWithCacheForModel, getModel, DEFAULT_MODEL_ID } from "@/lib/chat/models"
 import { verifyInternalSecret, getOutgoingInternalSecret } from "@/lib/internal-auth"
 
 function resolveAuth(req: Request): { tenantId: string; sapApiKey: string; userId?: string } | null {
@@ -74,7 +74,105 @@ function classifySapError(err: unknown): { error: SapError } {
     return { error: { code: "SAP_AUTH", message: "Sesión SAP expirada. Contacta al administrador.", retryable: false } }
   if (msg.includes("404"))
     return { error: { code: "SAP_NOT_FOUND", message: msg, retryable: false } }
+  if (msg.includes("702"))
+    return {
+      error: {
+        code: "SAP_TABLE_NOT_ACCESSIBLE",
+        message: "Esta tabla no es accesible vía SQL en este conector (ej. OITB, OSLP). Usa el endpoint OData equivalente en vez de consultar_sql.",
+        retryable: true,
+      },
+    }
   return { error: { code: "SAP_ERROR", message: msg, retryable: false } }
+}
+
+// ── Validación estática de las 10 reglas SQL restrictivas del conector ──────
+// No es un parser SQL completo — son heurísticas por regex sobre los patrones
+// ❌ documentados en el system prompt (ver lib/chat/system-prompt.ts, sección
+// "RESTRICCIONES SQL HANA"). El objetivo es devolver al LLM un error concreto
+// y accionable ANTES de pegarle a SAP, en vez de dejar que llegue un 702/error
+// de parser crudo que classifySapError no puede distinguir de un error genérico.
+function stripSqlStringLiterals(sql: string): string {
+  return sql.replace(/'(?:[^']|'')*'/g, "''")
+}
+
+function validateSqlConnectorRules(rawSql: string): SapError | null {
+  const sql = stripSqlStringLiterals(rawSql)
+
+  if (/^\s*WITH\s+[A-Za-z_][A-Za-z0-9_]*\s+AS\s*\(/i.test(sql)) {
+    return {
+      code: "SQL_RULE_CTE",
+      message: "Regla #2: los CTEs (WITH ... AS) no funcionan en este conector. Reescribe con JOIN directo, sin WITH.",
+      retryable: true,
+    }
+  }
+  if (/\bFROM\s*\(\s*SELECT\b/i.test(sql)) {
+    return {
+      code: "SQL_RULE_SUBQUERY_FROM",
+      message: "Regla #1: no se permiten subconsultas dentro del FROM (derived tables). Usa JOIN directo entre tablas reales.",
+      retryable: true,
+    }
+  }
+  if (/\bROUND\s*\(/i.test(sql)) {
+    return {
+      code: "SQL_RULE_ROUND",
+      message: "Regla #7: ROUND() no está soportada. Omite el redondeo — el frontend formatea los decimales.",
+      retryable: true,
+    }
+  }
+  if (/\b(NULLIF|COALESCE)\s*\(/i.test(sql)) {
+    return {
+      code: "SQL_RULE_NULLIF_COALESCE",
+      message: "Regla #8: NULLIF()/COALESCE() no están soportadas. Trae los agregados por separado y calcula desde los resultados (no las reemplaces con CASE WHEN ni aritmética, también prohibidas).",
+      retryable: true,
+    }
+  }
+  if (/\b(ADD_DAYS|ADD_MONTHS)\s*\(/i.test(sql)) {
+    return {
+      code: "SQL_RULE_ADD_DATE",
+      message: "Regla #9: ADD_DAYS()/ADD_MONTHS() no están soportadas. Calcula la fecha literal de antemano y úsala directamente en el filtro.",
+      retryable: true,
+    }
+  }
+  if (/\bCASE\s+WHEN\b/i.test(sql)) {
+    return {
+      code: "SQL_RULE_CASE_WHEN",
+      message: "Reglas #4/#6: CASE WHEN no está soportado (ni suelto en el SELECT ni dentro de una función de agregación). Filtra con WHERE o divide en dos queries separadas.",
+      retryable: true,
+    }
+  }
+
+  const groupBySegment = sql.match(/\bGROUP\s+BY\b([\s\S]*?)(?=\bORDER\s+BY\b|\bHAVING\b|$)/i)?.[1] ?? ""
+  const orderBySegment = sql.match(/\bORDER\s+BY\b([\s\S]*)$/i)?.[1] ?? ""
+
+  if (/\b(YEAR|MONTH)\s*\(/i.test(groupBySegment) || /\b(YEAR|MONTH)\s*\(/i.test(orderBySegment)) {
+    return {
+      code: "SQL_RULE_YEAR_MONTH_GROUPBY",
+      message: "Regla #10: YEAR()/MONTH() no funcionan dentro de GROUP BY ni ORDER BY (sí en WHERE). Agrupa por la columna de fecha directamente y filtra con un rango de fechas.",
+      retryable: true,
+    }
+  }
+
+  if (orderBySegment.trim() && (/\b(SUM|COUNT|AVG|MAX|MIN)\s*\(/i.test(orderBySegment) || /^\s*\d+\b/.test(orderBySegment))) {
+    return {
+      code: "SQL_RULE_ORDER_BY_AGGREGATE",
+      message: "Regla #3: ORDER BY no puede usar una función de agregación ni la posición numérica de columna. Si necesitas ordenar por un agregado, omite el ORDER BY y ordena los resultados en la presentación.",
+      retryable: true,
+    }
+  }
+
+  const selectSegment = sql.match(/\bSELECT\b([\s\S]*?)\bFROM\b/i)?.[1] ?? ""
+  if (
+    /\)\s*[-+*/]\s*[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(selectSegment) ||
+    /\b[A-Za-z_][A-Za-z0-9_]*\s*[-+*/]\s*[A-Za-z_][A-Za-z0-9_]*\b/.test(selectSegment)
+  ) {
+    return {
+      code: "SQL_RULE_ARITHMETIC",
+      message: "Regla #4: no se permite aritmética entre columnas ni entre agregados en el SELECT (resta, división, multiplicación, porcentajes, ticket promedio). Trae las columnas/agregados por separado y calcula desde los resultados.",
+      retryable: true,
+    }
+  }
+
+  return null
 }
 
 // ── OData URL builders ───────────────────────────────────────────
@@ -169,7 +267,15 @@ export const POST = withApiHandler(async (req: Request) => {
   // modelo, nunca produce un 400). El cliente puede pedir cualquier modelo/effort.
   const requestedModel = typeof body.model === "string" ? body.model : ""
   const requestedEffort = typeof body.effort === "string" ? body.effort : undefined
-  const { model: modelCap, effort, thinking } = resolveModelConfig(requestedModel, requestedEffort)
+
+  // Auto-routing por complejidad: si la consulta matchea keywords de reporte/KPI
+  // y el modelo resuelto es el más económico (Haiku, sin razonamiento), escala a
+  // Sonnet 5. NUNCA degrada una elección ya en Sonnet/Opus — solo sube desde el
+  // piso. Antes, isComplexQuery solo ampliaba maxSteps y dejaba el modelo intacto.
+  const baseModel = getModel(requestedModel)
+  const autoEscalated = isComplexQuery && baseModel.id === DEFAULT_MODEL_ID
+  const effectiveModel = autoEscalated ? "claude-sonnet-5" : requestedModel
+  const { model: modelCap, effort, thinking } = resolveModelConfig(effectiveModel, requestedEffort)
   const selectedModel = modelCap.id
   const maxSteps = isComplexQuery ? 20 : 12
 
@@ -199,6 +305,12 @@ export const POST = withApiHandler(async (req: Request) => {
     execute: async (ctx) => {
       writer = ctx.writer
       writer.write({ type: "data-status", data: { text: "Conectando a SAP B1…" } } as never)
+      if (autoEscalated) {
+        writer.write({
+          type: "data-status",
+          data: { text: `Consulta compleja detectada — escalando a ${modelCap.name}…` },
+        } as never)
+      }
       const [sapCtx, catalogResult] = await Promise.all([
         fetchSapContext(client, tenantId),
         client.catalogList().catch(() => null),
@@ -308,6 +420,10 @@ export const POST = withApiHandler(async (req: Request) => {
             execute: async ({ sql }: { sql: string }, { toolCallId }) => {
               if (!sql.trim().toUpperCase().startsWith("SELECT")) {
                 return { error: { code: "INVALID_QUERY", message: "Solo se permiten consultas SELECT.", retryable: false } }
+              }
+              const ruleViolation = validateSqlConnectorRules(sql)
+              if (ruleViolation) {
+                return { error: ruleViolation }
               }
               const SQL_KEYWORDS = new Set([
                 "ORDER","OUTER","UNION","OVER","OFFSET","ONLY","INNER","CROSS",
