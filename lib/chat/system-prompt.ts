@@ -215,7 +215,7 @@ Usa herramientas para responder preguntas con datos reales. Si la pregunta es co
 - Si una query falla, reintenta silenciosamente sin narrar el fallo.
 
 **TABLAS SAP YA DESCUBIERTAS — NO necesitan descubrir_esquema:**
-OINV, INV1, OITM, OCRD, ORCT, RCT2, ORDR, RDR1, OQUT, QUT1, OPOR, POR1, OIGN, IGN1, OWOR, WOR1.
+OINV, INV1, OITM, OCRD, ORCT, RCT2, ORDR, RDR1, OQUT, QUT1, OPOR, POR1, OIGN, IGN1, OWOR, WOR1, ORSC.
 Para estas tablas ve directamente a consultar_sql o listar_registros.
 (OITB y OSLP NO se pueden consultar vía SQL — dan error 702. Para grupos de ítem y vendedores usa OData: listar_registros.)
 
@@ -299,12 +299,13 @@ Para estas tablas ve directamente a consultar_sql o listar_registros.
 | ItemCode | String | Código único del artículo (PK) |
 | ItemName | String | Nombre del artículo |
 | ItmsGrpCod | Integer | Código de grupo de artículo |
-| AvgStdPrice | Decimal | Costo promedio ponderado |
+| AvgPrice | Decimal | Costo promedio ponderado |
 | OnHand | Decimal | Stock físico disponible |
 | IsCommited | Decimal | Stock comprometido en pedidos |
 | OnOrder | Decimal | Stock en camino (en OC abiertas) |
 | SellItem | String | 'Y' / 'N' — si se vende |
 | BuyItem | String | 'Y' / 'N' — si se compra |
+> ⚠️ AvgStdPrice NO existe en este conector — usa AvgPrice.
 
 ### ORCT — Cobros recibidos (cabecera)
 | Campo | Tipo | Descripción |
@@ -340,11 +341,33 @@ Para estas tablas ve directamente a consultar_sql o listar_registros.
 | Price | Decimal | Precio unitario acordado |
 | LineTotal | Decimal | Total de línea |
 
+### OWOR — Órdenes de producción (cabecera)
+> ⚠️ CmpltQty es la columna real de cantidad completada — NO "CompletedQty". Para el resto de columnas de OWOR no confirmadas en esta sección, usa descubrir_esquema antes de asumir.
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| CmpltQty | Decimal | Cantidad completada de la orden |
+
+### WOR1 — Líneas de órdenes de producción
+> ⚠️ ItemName es la columna real de descripción/nombre de línea — NO "Dscription" (a diferencia de RDR1/INV1/POR1, que sí usan ese nombre histórico). Para el resto de columnas de WOR1 no confirmadas en esta sección, usa descubrir_esquema antes de asumir.
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| ItemName | String | Nombre/descripción del artículo de la línea |
+
 ### OITB — Grupos de artículos
 > ⚠️ **NO ACCESIBLE VÍA SQL** (error 702). Para nombres de grupos, usa el contexto SAP (datos maestros al inicio del chat) o informa que solo tienes el código ItmsGrpCod desde OITM.
 
 ### OSLP — Vendedores
 > ⚠️ **NO ACCESIBLE VÍA SQL** (error 702). Usa listar_registros("sistema/vendedores") → devuelve SalesEmployeeCode (= SlpCode) y SalesEmployeeName. Cruza con SlpCode de OINV/ORDR.
+
+### ORSC — Recursos de producción (máquinas/centros de trabajo)
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| ResCode | String | Código del recurso (PK) |
+| ResName | String | Nombre del recurso |
+| ResType | String | Tipo de recurso — 'M' = Máquina (otros valores sin confirmar) |
+| ResGrpCod | Integer | Código de grupo del recurso |
+> ⚠️ No hay columnas de costo/moneda/UoM confirmadas para ORSC vía SQL (SAP bloquea la introspección de catálogo para SQLQueries en esta tabla) — NO inventes columnas de costo aquí. Para el costo real de una orden de producción, usa los movimientos de inventario posteados (InventoryGenEntries/InventoryGenExits, BaseType=202, BaseEntry=OWOR.DocEntry), NO intentes leer columnas de costo de ORSC.
+> ⚠️ El entity OData "Resources" usa nombres de campo DISTINTOS (Code/Name/Group/UnitOfMeasure) — no son intercambiables con las columnas SQL de ORSC (prefijo Res*). Ver la nota general de OData vs SQLQueries más abajo.
 
 ---
 
@@ -633,6 +656,7 @@ GROUP BY SlpCode
 - OCRD.CardType en SQL: 'C' = cliente, 'S' = proveedor, 'L' = lead/prospecto. NO uses 'cCustomer' (ese es el valor OData).
 - OINV.CANCELED: 'N' = factura válida, 'Y' = cancelada. ORCT.Canceled: 'N'/'Y'. Siempre filtra AND CANCELED = 'N'.
 - GrssProfit SOLO existe en INV1 (líneas). NO en OINV (cabecera).
+- **OData y SQLQueries pueden usar esquemas de nombres de columna DISTINTOS para la misma entidad SAP.** Ejemplo confirmado: el entity OData "Resources" usa Code/Name/Group/UnitOfMeasure, pero la tabla SQL real ORSC usa ResCode/ResName/ResGrpCod (prefijo Res*). No asumas que un nombre de campo OData sirve para consultar_sql, ni viceversa — si no está en el schema de esta sección, usa descubrir_esquema.
 - Presenta siempre los resultados con contexto: totales, variaciones, interpretación del negocio.
 
 ---
