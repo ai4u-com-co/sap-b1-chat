@@ -1,5 +1,5 @@
 import { createAnthropic } from "@ai-sdk/anthropic"
-import { withApiHandler } from "@ai4u/platform/http"
+import { withApiHandler, type ApiContext } from "@ai4u/platform/http"
 import { supabase } from "@/lib/supabase"
 import {
   streamText, stepCountIs, pruneMessages,
@@ -124,7 +124,7 @@ const CORE_TABLES = [
 ]
 
 // ── Handler principal ────────────────────────────────────────────
-export const POST = withApiHandler(async (req: Request) => {
+export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const internal = resolveAuth(req)
   const tenantId = internal?.tenantId ?? await getTenantId()
   const apiKey   = internal?.sapApiKey ?? await getApiKey()
@@ -268,6 +268,16 @@ export const POST = withApiHandler(async (req: Request) => {
               } catch {}
             }
           }
+        },
+        // Sin este onError, un fallo de Anthropic (rate limit, timeout, etc.) a
+        // mitad del stream no se loguea en ningún lado: streamText no lo lanza
+        // como excepción (no hay forma de esperar al modelo antes de responder),
+        // solo lo emite como chunk de error dentro del stream.
+        onError: ({ error }) => {
+          apiCtx.log.error(
+            { err: error, tenantId, sessionId, selectedModel },
+            "chat: error durante streaming (Anthropic/tool loop)"
+          )
         },
         // cacheControl NO va aquí (global) — se marca por-mensaje en systemMessages.
         // thinking/effort vienen ya resueltos y clampeados por resolveModelConfig.
@@ -1195,6 +1205,15 @@ export const POST = withApiHandler(async (req: Request) => {
       } catch (err) {
         console.error("Error enviando usage:", err)
       }
+    },
+    // createUIMessageStreamResponse (abajo) retorna el Response de streaming de
+    // forma síncrona, antes de que execute() termine — withApiHandler ya no
+    // puede capturar nada de lo que pase acá adentro. Sin este onError, una
+    // excepción no controlada en execute() (p.ej. fetchSapContext) se pierde
+    // por completo: nunca llega a platform_logs.
+    onError: (error) => {
+      apiCtx.log.error({ err: error, tenantId, sessionId }, "chat: error no controlado en execute()")
+      return "Ocurrió un error procesando tu consulta en SAP. Por favor intenta de nuevo."
     },
   })
 
