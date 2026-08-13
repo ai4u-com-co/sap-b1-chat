@@ -144,7 +144,12 @@ export function calculateCostWithCacheForModel(
   model: ModelCapability,
   b: { noCacheTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number }
 ): { costUsd: number; savingsUsd: number } {
-  const CACHE_WRITE_MULT = 1.25
+  // 2x, no 1.25x: el único cache_control de este chat (route.ts, bloque system
+  // estático + maestros SAP) pide ttl:"1h", y Anthropic cobra el write de un
+  // breakpoint de 1h a 2x el precio de input — el 1.25x es la tarifa del TTL
+  // de 5 minutos, que este chat no usa. Si algún día se agrega un breakpoint
+  // con TTL de 5 min, este multiplicador deja de ser válido para ese tramo.
+  const CACHE_WRITE_MULT = 2.0
   const CACHE_READ_MULT = 0.1
   const { input, output } = model.pricing
   const noCacheCost = (b.noCacheTokens / 1_000_000) * input
