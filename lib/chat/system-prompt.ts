@@ -194,7 +194,8 @@ Usa herramientas para responder preguntas con datos reales. Si la pregunta es co
 - Si una query falla, reintenta silenciosamente sin narrar el fallo.
 
 **TABLAS SAP YA DESCUBIERTAS — NO necesitan descubrir_esquema:**
-OINV, INV1, ORDR, RDR1, OPOR, POR1, OCRD, OITM, ORCT, OWOR, WOR1, ORSC.
+OINV, INV1, ORDR, RDR1, OCRD, OITM, OWHS, ORCT, OPOR, POR1, OPCH, PCH1, OWOR, WOR1,
+ORSC, OJDT, OACT.
 Para estas tablas ve directamente a consultar_sql o listar_registros. Esta lista debe
 coincidir exactamente con SCHEMA_DOCUMENTED_TABLES en lib/chat/sql-schema-gate.ts
 (que es lo que de verdad hace cumplir el gate de consultar_sql) — si vas a agregar una
@@ -292,6 +293,12 @@ tiene sus columnas verificadas: usa descubrir_esquema antes de consultarla por S
 | BuyItem | String | 'Y' / 'N' — si se compra |
 > ⚠️ AvgStdPrice NO existe en este conector — usa AvgPrice.
 
+### OWHS — Almacenes/Bodegas
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| WhsCode | String | Código del almacén (ej: '01') (PK) |
+| WhsName | String | Nombre del almacén (ej: 'Bodega Principal') |
+
 ### ORCT — Cobros recibidos (cabecera)
 | Campo | Tipo | Descripción |
 |-------|------|-------------|
@@ -326,6 +333,26 @@ tiene sus columnas verificadas: usa descubrir_esquema antes de consultarla por S
 | Price | Decimal | Precio unitario acordado |
 | LineTotal | Decimal | Total de línea |
 
+### OPCH — Facturas de proveedores (cabecera)
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| DocEntry | Integer | Clave interna |
+| DocNum | Integer | Número de factura SAP |
+| CardCode | String | Código de proveedor |
+| CardName | String | Nombre de proveedor |
+| DocDate | Date | Fecha de factura |
+| DocTotal | Decimal | Total con impuestos |
+| DocStatus | String | Estado de factura |
+
+### PCH1 — Líneas de facturas de proveedores
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| DocEntry | Integer | FK a OPCH |
+| ItemCode | String | Código artículo |
+| Quantity | Decimal | Cantidad |
+| Price | Decimal | Precio unitario |
+| LineTotal | Decimal | Total de línea |
+
 ### OWOR — Órdenes de producción (cabecera)
 > ⚠️ CmpltQty es la columna real de cantidad completada — NO "CompletedQty". Para el resto de columnas de OWOR no confirmadas en esta sección, usa descubrir_esquema antes de asumir.
 | Campo | Tipo | Descripción |
@@ -353,6 +380,22 @@ tiene sus columnas verificadas: usa descubrir_esquema antes de consultarla por S
 | ResGrpCod | Integer | Código de grupo del recurso |
 > ⚠️ No hay columnas de costo/moneda/UoM confirmadas para ORSC vía SQL (SAP bloquea la introspección de catálogo para SQLQueries en esta tabla) — NO inventes columnas de costo aquí. Para el costo real de una orden de producción, usa los movimientos de inventario posteados (InventoryGenEntries/InventoryGenExits, BaseType=202, BaseEntry=OWOR.DocEntry), NO intentes leer columnas de costo de ORSC.
 > ⚠️ El entity OData "Resources" usa nombres de campo DISTINTOS (Code/Name/Group/UnitOfMeasure) — no son intercambiables con las columnas SQL de ORSC (prefijo Res*). Ver la nota general de OData vs SQLQueries más abajo.
+
+### OJDT — Asientos contables (cabecera)
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| TransId | Integer | Identificador numérico de la transacción contable (PK) |
+| RefDate | Date | Fecha de contabilización del asiento |
+| Memo | String | Glosa o descripción del asiento |
+| LocTotal | Decimal | Total del asiento en moneda local |
+
+### OACT — Plan de Cuentas (cuentas contables)
+| Campo | Tipo | Descripción |
+|-------|------|-------------|
+| AcctCode | String | Código de cuenta contable (ej: '110505') (PK) |
+| AcctName | String | Nombre de la cuenta |
+| CurrTotal | Decimal | Saldo de cuenta actual |
+| Postable | String | 'Y' / 'N' — si la cuenta recibe asientos directos |
 
 ---
 
