@@ -1,3 +1,5 @@
+import { SAP_TABLE_SCHEMAS } from "@ai4u/contracts"
+
 /**
  * Gate de `consultar_sql` (app/api/chat/route.ts): decide si el LLM puede
  * ejecutar SQL contra una tabla SAP sin llamar antes a `descubrir_esquema`.
@@ -33,16 +35,9 @@
  * (catálogo único compartido entre `sap-b1-backend` y `sap-b1-chat`), fuera
  * de este alcance.
  */
-export const SCHEMA_DOCUMENTED_TABLES = [
-  "OINV", "INV1",
-  "ORDR", "RDR1",
-  "OPOR", "POR1",
-  "OCRD",
-  "OITM",
-  "ORCT",
-  "OWOR", "WOR1",
-  "ORSC",
-] as const
+export const SCHEMA_DOCUMENTED_TABLES: readonly string[] = Object.values(SAP_TABLE_SCHEMAS)
+  .filter((t) => t.verificacion === "full" || t.verificacion === "partial")
+  .map((t) => t.tabla)
 
 const SQL_KEYWORDS = new Set([
   "ORDER", "OUTER", "UNION", "OVER", "OFFSET", "ONLY", "INNER", "CROSS",
