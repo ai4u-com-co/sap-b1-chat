@@ -1161,7 +1161,22 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
         },
       })
 
-      for await (const chunk of result.toUIMessageStream({ sendReasoning: true })) {
+      // Sin este onError, un error emitido a mitad del streaming de Anthropic
+      // (overloaded, no-output, etc.) no se lanza como excepción — llega como
+      // un part { type: "error" } dentro del propio stream de toUIMessageStream,
+      // y el default de la librería `ai` lo reemplaza por el string genérico
+      // "An error occurred." antes de que llegue al cliente. Acá lo logueamos
+      // completo (server-side) y devolvemos al cliente el mensaje real del
+      // error — no hay credenciales ni datos de SAP en err.message, viene del
+      // SDK de Anthropic o del tool-loop, no de responses de negocio.
+      for await (const chunk of result.toUIMessageStream({
+        sendReasoning: true,
+        onError: (error) => {
+          const message = error instanceof Error ? error.message : String(error)
+          apiCtx.log.error({ err: error, tenantId, sessionId }, "chat: error en toUIMessageStream (streaming Anthropic)")
+          return message
+        },
+      })) {
         writer.write(chunk)
       }
       
