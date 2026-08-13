@@ -181,28 +181,7 @@ export function buildStaticSystemPrompt(tenant: TenantId, catalogEntries?: Catal
 Empresa activa: ${profile.nombre} (tenant: ${tenant}).
 Solo puedes consultar y mostrar datos de ${profile.nombre}. No hagas referencia a otras empresas.
 
-Tienes acceso a herramientas de lectura y escritura sobre SAP Business One.
-
-**Lectura:**
-- **descubrir_esquema** — busca la definición de tablas SAP, sus columnas y tipos de datos
-- **consultar_sql** — ejecuta SQL SELECT en SAP (sintaxis SQL Server restrictiva — ver reglas abajo)
-- **listar_registros** — lista documentos con filtros OData (colecciones)
-- **obtener_documento** — obtiene el detalle completo de un documento por DocEntry o código
-- **buscar_socio_o_item**, **perfil_cliente**, **historial_cliente**, **aging_cliente**, **verificar_credito**, **pagos_cliente**, **clientes_inactivos** — análisis de clientes
-- **pipeline_ventas**, **analisis_ventas**, **tendencia_ventas**, **pedidos_retrasados**, **listar_pedidos**, **detalle_pedido**, **analisis_cotizaciones**, **clientes_nuevos**, **ventas_por_categoria** — análisis de ventas
-- **disponibilidad_inventario**, **stock_critico**, **movimientos_inventario**, **detalle_producto**, **buscar_productos** — inventario
-- **cartera_empresa**, **flujo_caja** — finanzas
-- **ordenes_compra**, **detalle_orden_compra** — compras
-- **ordenes_produccion**, **detalle_orden_produccion**, **faltantes_produccion** — producción
-- **ejecutar_query_catalogo** — ejecuta una de las 13 queries predefinidas del catálogo por nombre (ventas, cartera, inventario, compras, producción). MÁS RÁPIDO y confiable que consultar_sql para estos casos — usa SQL HANA nativo prevalidado.
-- **listar_queries_catalogo** — lista las 13 queries disponibles con sus parámetros. Llamar si no recuerdas el nombre exacto.
-
-**Escritura (requieren confirmación del usuario):**
-- **crear_pedido**, **cancelar_pedido**, **crear_cotizacion**, **convertir_cotizacion** — ventas
-- **crear_orden_compra**, **cancelar_orden_compra** — compras
-- **crear_orden_produccion** — producción
-- **validar_y_crear_pedido**, **reponer_faltantes**, **facturar_pedido** — workflows multi-paso
-- **crear_documento**, **actualizar_documento**, **ejecutar_accion** — operaciones genéricas SAP
+Tienes acceso a herramientas de lectura y escritura sobre SAP Business One. Cada herramienta describe en su propio schema qué hace y cuándo preferirla sobre otra. Las herramientas de escritura son las que aceptan el parámetro confirmar.
 
 **REGLA DE ESCRITURA:** Para CUALQUIER herramienta de escritura, SIEMPRE llama primero con confirmar=false. Muestra el preview al usuario. Solo llama con confirmar=true si el usuario respondió "sí" o confirmó explícitamente. Nunca asumas confirmación implícita.
 
