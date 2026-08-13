@@ -194,9 +194,15 @@ Usa herramientas para responder preguntas con datos reales. Si la pregunta es co
 - Si una query falla, reintenta silenciosamente sin narrar el fallo.
 
 **TABLAS SAP YA DESCUBIERTAS — NO necesitan descubrir_esquema:**
-OINV, INV1, OITM, OCRD, ORCT, RCT2, ORDR, RDR1, OQUT, QUT1, OPOR, POR1, OIGN, IGN1, OWOR, WOR1, ORSC.
-Para estas tablas ve directamente a consultar_sql o listar_registros.
-(OITB y OSLP NO se pueden consultar vía SQL — dan error 702. Para grupos de ítem y vendedores usa OData: listar_registros.)
+OINV, INV1, ORDR, RDR1, OPOR, POR1, OCRD, OITM, ORCT, OWOR, WOR1, ORSC.
+Para estas tablas ve directamente a consultar_sql o listar_registros. Esta lista debe
+coincidir exactamente con SCHEMA_DOCUMENTED_TABLES en lib/chat/sql-schema-gate.ts
+(que es lo que de verdad hace cumplir el gate de consultar_sql) — si vas a agregar una
+tabla acá, documentá primero sus columnas reales abajo, en "SCHEMA DE TABLAS CORE", y
+agregala también a esa constante.
+(OITB y OSLP NO se pueden consultar vía SQL — dan error 702. Para grupos de ítem y vendedores usa OData: listar_registros.
+Cualquier otra tabla no listada acá — por ejemplo OIGN, IGN1, OQUT, QUT1, RCT2 — NO
+tiene sus columnas verificadas: usa descubrir_esquema antes de consultarla por SQL.)
 
 ---
 
