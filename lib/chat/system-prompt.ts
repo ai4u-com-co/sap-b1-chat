@@ -390,7 +390,7 @@ ${endpointSections}
 - **top**: max resultados (1–500, default 50)
 - **skip**: offset para paginación
 - **orderby**: campo + asc/desc. Ej: "DocDate desc"
-- **expand**: expandir relaciones. Ej: "DocumentLines"
+- **expand**: expandir relaciones REALES (navigation properties). ⚠️ "DocumentLines" NO es una relación expandible — SAP la rechaza con error 400 "Cannot expand invalid navigation property". Ya viene incluida en la respuesta completa (sin usar select); si se usa select, hay que agregar "DocumentLines" a la lista de campos, nunca pasarla por expand.
 
 Valores de enumeradores SAP:
 - DocumentStatus: 'bost_Open' = abierto, 'bost_Close' = cerrado
