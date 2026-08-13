@@ -28,6 +28,7 @@ import { ENTITY_MAP } from "@ai4u/contracts"
 import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type CatalogEntry } from "@/lib/chat/system-prompt"
 import { fetchSapContext } from "@/lib/chat/sap-context"
 import { getTenantBackend } from "@/lib/tenant-backends"
+import { buildDocUrl } from "@/lib/chat/odata-url"
 
 export const maxDuration = 300
 
@@ -78,16 +79,6 @@ function classifySapError(err: unknown): { error: SapError } {
 }
 
 // ── OData URL builders ───────────────────────────────────────────
-function buildDocUrl(entityKey: string, id: string, expand?: string, select?: string): string {
-  const cfg = ENTITY_MAP[entityKey]
-  const sapEntity = cfg?.sapEntity ?? entityKey
-  const key = cfg?.keyType === "string" ? `('${encodeURIComponent(id)}')` : `(${id})`
-  const parts: string[] = []
-  if (expand) parts.push(`$expand=${expand}`)
-  if (select) parts.push(`$select=${select}`)
-  return `/${sapEntity}${key}${parts.length ? "?" + parts.join("&") : ""}`
-}
-
 function buildODataUrl(entityKey: string, query: Record<string, string>): string {
   const parts: string[] = []
   const top = Math.min(parseInt(query.top ?? "50", 10) || 50, 500)
@@ -403,12 +394,12 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
 
           obtener_documento: tool({
             description:
-              "Obtiene el detalle completo de un documento de negocio por su ID. Incluye líneas si se pasa expand='DocumentLines'. " +
+              "Obtiene el detalle completo de un documento de negocio por su ID. Las líneas (DocumentLines) vienen incluidas automáticamente, no hace falta pedirlas por expand. " +
               "Dominios: ventas/pedidos, ventas/facturas, compras/ordenes, inventario/items, socios/clientes, socios/proveedores.",
             inputSchema: z.object({
               endpoint: z.string().describe("Dominio sin tenant. Ej: 'ventas/pedidos', 'inventario/items'"),
               id: z.string().describe("DocEntry numérico o código string"),
-              expand: z.string().optional().describe("Ej: 'DocumentLines'"),
+              expand: z.string().optional().describe("Solo para relaciones reales (navigation properties). DocumentLines NO se expande, ya viene incluida siempre."),
               select: z.string().optional().describe("Campos separados por coma"),
             }),
             execute: async ({ endpoint, id, expand, select }: { endpoint: string; id: string; expand?: string; select?: string }, { toolCallId }) => {
