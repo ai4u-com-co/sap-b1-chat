@@ -29,6 +29,7 @@ import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type
 import { fetchSapContext } from "@/lib/chat/sap-context"
 import { getTenantBackend } from "@/lib/tenant-backends"
 import { buildDocUrl } from "@/lib/chat/odata-url"
+import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
 
 export const maxDuration = 300
 
@@ -108,12 +109,6 @@ const complexReportKeywords = [
   "vencido","cartera","cobros","pareto","historial",
 ]
 
-// ── CORE_TABLES pre-registradas ──────────────────────────────────
-const CORE_TABLES = [
-  "OINV","INV1","OITM","OITB","OCRD","OSLP","ORCT","RCT2",
-  "ORDR","RDR1","OQUT","QUT1","OPOR","POR1","OIGN","IGN1","OWOR","WOR1",
-]
-
 // ── Handler principal ────────────────────────────────────────────
 export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const internal = resolveAuth(req)
@@ -173,8 +168,11 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   })
   const allMessages = pruned.length > 60 ? pruned.slice(pruned.length - 60) : pruned
 
-  // discoveredTables — estado por request
-  const discoveredTables = new Set<string>(CORE_TABLES)
+  // discoveredTables — estado por request. Se pre-carga con
+  // SCHEMA_DOCUMENTED_TABLES (las únicas tablas con columnas realmente
+  // documentadas en system-prompt.ts — ver lib/chat/sql-schema-gate.ts).
+  // Cualquier otra tabla exige pasar por `descubrir_esquema` primero.
+  const discoveredTables = new Set<string>(SCHEMA_DOCUMENTED_TABLES)
 
   // Anthropic key per tenant
   const anthropicKey =
@@ -310,13 +308,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               if (!sql.trim().toUpperCase().startsWith("SELECT")) {
                 return { error: { code: "INVALID_QUERY", message: "Solo se permiten consultas SELECT.", retryable: false } }
               }
-              const SQL_KEYWORDS = new Set([
-                "ORDER","OUTER","UNION","OVER","OFFSET","ONLY","INNER","CROSS",
-                "GROUP","HAVING","WHERE","FROM","INTO","JOIN","LEFT","RIGHT","FULL","WITH",
-              ])
-              const tableMatches = sql.match(/\b(O[A-Z]{3,4}|[A-Z]{3}\d)\b/gi) ?? []
-              const tablesInQuery = Array.from(new Set(tableMatches.map((t) => t.toUpperCase()).filter((t) => !SQL_KEYWORDS.has(t))))
-              const undiscovered = tablesInQuery.filter((t) => !discoveredTables.has(t))
+              const undiscovered = findUndiscoveredTables(sql, discoveredTables)
               if (undiscovered.length > 0) {
                 return {
                   error: {
