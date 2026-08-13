@@ -395,7 +395,8 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           obtener_documento: tool({
             description:
               "Obtiene el detalle completo de un documento de negocio por su ID. Las líneas (DocumentLines) vienen incluidas automáticamente, no hace falta pedirlas por expand. " +
-              "Dominios: ventas/pedidos, ventas/facturas, compras/ordenes, inventario/items, socios/clientes, socios/proveedores.",
+              "Dominios: ventas/pedidos, ventas/facturas, compras/ordenes, inventario/items, socios/clientes, socios/proveedores. " +
+              "Si existe una tool de detalle específica para el dominio (detalle_pedido, detalle_orden_compra, detalle_orden_produccion, detalle_producto), prefiere esa — devuelve el documento ya enriquecido en vez de la respuesta OData cruda.",
             inputSchema: z.object({
               endpoint: z.string().describe("Dominio sin tenant. Ej: 'ventas/pedidos', 'inventario/items'"),
               id: z.string().describe("DocEntry numérico o código string"),
@@ -421,7 +422,8 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           listar_registros: tool({
             description:
               "Lista documentos de negocio con filtros: pedidos, facturas, órdenes de compra, clientes, inventario. " +
-              "Dominios: ventas/pedidos, ventas/facturas, ventas/cotizaciones, compras/ordenes, inventario/items, socios/clientes, socios/proveedores, pagos/cobros.",
+              "Dominios: ventas/pedidos, ventas/facturas, ventas/cotizaciones, compras/ordenes, inventario/items, socios/clientes, socios/proveedores, pagos/cobros. " +
+              "Si existe una tool específica para el dominio (listar_pedidos para ventas/pedidos, ordenes_compra para compras/ordenes, ordenes_produccion para producción), prefiere esa — tiene filtros de negocio más simples que la sintaxis OData de esta tool.",
             inputSchema: z.object({
               endpoint: z.string().describe("Ruta sin tenant. Ej: 'ventas/facturas'"),
               filter: z.string().optional().describe("Filtro OData. Ej: \"DocDate ge '2026-05-01'\""),
@@ -629,7 +631,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           listar_pedidos: tool({
-            description: "Lista pedidos de venta con filtros por cliente, estado y fechas.",
+            description: "Lista pedidos de venta con filtros por cliente, estado y fechas. Preferir sobre listar_registros para pedidos de venta.",
             inputSchema: z.object({
               cardCode: z.string().optional(),
               estado: z.enum(["O", "C"]).optional(),
@@ -652,7 +654,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           detalle_pedido: tool({
-            description: "Detalle completo de un pedido de venta por DocEntry: encabezado + líneas.",
+            description: "Detalle completo de un pedido de venta por DocEntry: encabezado + líneas. Preferir sobre obtener_documento para pedidos de venta.",
             inputSchema: z.object({ docEntry: z.number().int().positive() }),
             execute: async ({ docEntry }: { docEntry: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Obteniendo pedido DocEntry ${docEntry}…` } } as never)
@@ -760,7 +762,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           detalle_producto: tool({
-            description: "Ficha completa de un producto: descripción, stock por almacén y precios por lista.",
+            description: "Ficha completa de un producto: descripción, stock por almacén y precios por lista. Preferir sobre obtener_documento para artículos.",
             inputSchema: z.object({ itemCode: z.string() }),
             execute: async ({ itemCode }: { itemCode: string }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Cargando ficha de ${itemCode}…` } } as never)
@@ -815,7 +817,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           ordenes_compra: tool({
-            description: "Lista órdenes de compra con filtros: por proveedor, estado y fechas.",
+            description: "Lista órdenes de compra con filtros: por proveedor, estado y fechas. Preferir sobre listar_registros para órdenes de compra.",
             inputSchema: z.object({
               cardCode: z.string().optional(),
               estado: z.enum(["O", "C"]).optional(),
@@ -838,7 +840,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           detalle_orden_compra: tool({
-            description: "Detalle completo de una orden de compra: proveedor, artículos pedidos, cantidades recibidas y pendientes.",
+            description: "Detalle completo de una orden de compra: proveedor, artículos pedidos, cantidades recibidas y pendientes. Preferir sobre obtener_documento para órdenes de compra.",
             inputSchema: z.object({ docEntry: z.number().int().positive() }),
             execute: async ({ docEntry }: { docEntry: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Cargando OC DocEntry ${docEntry}…` } } as never)
@@ -867,7 +869,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           detalle_orden_produccion: tool({
-            description: "Detalle completo de una orden de producción: artículo terminado, componentes y cantidades.",
+            description: "Detalle completo de una orden de producción: artículo terminado, componentes y cantidades. Preferir sobre obtener_documento para órdenes de producción.",
             inputSchema: z.object({ docEntry: z.number().int().positive() }),
             execute: async ({ docEntry }: { docEntry: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Cargando OP DocEntry ${docEntry}…` } } as never)
@@ -950,7 +952,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           crear_pedido: tool({
-            description: "Crea un pedido de venta. REGLA: llamar primero con confirmar=false para preview. Solo confirmar=true si el usuario aprobó.",
+            description: "Crea un pedido de venta. REGLA: llamar primero con confirmar=false para preview. Solo confirmar=true si el usuario aprobó. Preferir sobre crear_documento para pedidos de venta.",
             inputSchema: z.object({
               cardCode: z.string(),
               lines: z.array(z.object({ itemCode: z.string(), quantity: z.number().positive(), unitPrice: z.number().nonnegative().optional(), warehouseCode: z.string().optional(), discount: z.number().min(0).max(100).optional() })).min(1),
@@ -971,7 +973,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           cancelar_pedido: tool({
-            description: "Cancela un pedido de venta abierto. Irreversible. REGLA: confirmar=false primero para advertencia.",
+            description: "Cancela un pedido de venta abierto. Irreversible. REGLA: confirmar=false primero para advertencia. Preferir sobre ejecutar_accion para cancelar pedidos de venta.",
             inputSchema: z.object({
               docEntry: z.number().int().positive(),
               confirmar: z.boolean().default(false),
@@ -987,7 +989,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           crear_cotizacion: tool({
-            description: "Crea una cotización de venta. REGLA: confirmar=false primero.",
+            description: "Crea una cotización de venta. REGLA: confirmar=false primero. Preferir sobre crear_documento para cotizaciones de venta.",
             inputSchema: z.object({
               cardCode: z.string(),
               lines: z.array(z.object({ itemCode: z.string(), quantity: z.number().positive(), unitPrice: z.number().nonnegative().optional(), warehouseCode: z.string().optional(), discount: z.number().min(0).max(100).optional() })).min(1),
@@ -1023,7 +1025,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           crear_orden_compra: tool({
-            description: "Crea una orden de compra a un proveedor. REGLA: confirmar=false primero.",
+            description: "Crea una orden de compra a un proveedor. REGLA: confirmar=false primero. Preferir sobre crear_documento para órdenes de compra.",
             inputSchema: z.object({
               cardCode: z.string(),
               lines: z.array(z.object({ itemCode: z.string(), quantity: z.number().positive(), unitPrice: z.number().nonnegative().optional(), warehouseCode: z.string().optional() })).min(1),
@@ -1044,7 +1046,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           cancelar_orden_compra: tool({
-            description: "Cancela una orden de compra abierta. Irreversible. REGLA: confirmar=false primero.",
+            description: "Cancela una orden de compra abierta. Irreversible. REGLA: confirmar=false primero. Preferir sobre ejecutar_accion para cancelar órdenes de compra.",
             inputSchema: z.object({
               docEntry: z.number().int().positive(),
               confirmar: z.boolean().default(false),
@@ -1060,7 +1062,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           crear_orden_produccion: tool({
-            description: "Crea una orden de producción. REGLA: confirmar=false primero.",
+            description: "Crea una orden de producción. REGLA: confirmar=false primero. Preferir sobre crear_documento para órdenes de producción.",
             inputSchema: z.object({
               itemCode: z.string(),
               plannedQty: z.number().positive(),
@@ -1081,7 +1083,8 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           crear_documento: tool({
-            description: "Crea un documento de negocio genérico. REGLA: confirmar=false primero. Dominios: ventas/pedidos, ventas/cotizaciones, ventas/facturas, compras/ordenes.",
+            description: "Crea un documento de negocio genérico. REGLA: confirmar=false primero. Dominios: ventas/pedidos, ventas/cotizaciones, ventas/facturas, compras/ordenes. " +
+              "Si existe una tool específica para el dominio (crear_pedido, crear_cotizacion, crear_orden_compra, crear_orden_produccion), prefiere esa — valida mejor el payload antes de enviarlo a SAP. Usa esta solo cuando no haya una tool específica.",
             inputSchema: z.object({
               endpoint: z.string().describe("Ej: 'compras/ordenes', 'ventas/cotizaciones'"),
               payload: z.string().describe("JSON del documento como string"),
@@ -1127,7 +1130,8 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           ejecutar_accion: tool({
-            description: "Ejecuta una acción en un documento: Cancel, Close, Reopen. REGLA: confirmar=false primero — puede ser irreversible.",
+            description: "Ejecuta una acción en un documento: Cancel, Close, Reopen. REGLA: confirmar=false primero — puede ser irreversible. " +
+              "Para cancelar un pedido de venta o una orden de compra, prefiere cancelar_pedido/cancelar_orden_compra — ya validan el estado del documento antes de cancelar.",
             inputSchema: z.object({
               endpoint: z.string(),
               docEntry: z.coerce.number().int().positive().describe("DocEntry numérico del documento"),
