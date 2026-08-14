@@ -227,6 +227,7 @@ tiene sus columnas verificadas: usa descubrir_esquema antes de consultarla por S
 | CANCELED | String | 'N' = vigente, 'Y' = cancelada — SIEMPRE filtra AND CANCELED = 'N' |
 | Comments | String | Comentarios |
 > ⚠️ GrssProfit NO existe en OINV. Usa INV1.GrssProfit con JOIN.
+> ⚠️ 'DiscSum' es el nombre de columna SQL (consultar_sql). Vía OData (obtener_documento/listar_registros contra 'ventas/facturas') el campo equivalente de descuento total de cabecera se llama 'TotalDiscount', NO 'DiscSum' — SAP Service Layer rechaza $select con 'DiscSum' (error -1000, "Property ... is invalid"). No mezcles el nombre SQL en un select de OData.
 
 ### INV1 — Líneas de facturas de clientes
 | Campo | Tipo | Descripción |
@@ -414,7 +415,7 @@ ${endpointSections}
 ## PARÁMETROS ODATA (para listar_registros)
 
 - **filter**: expresión OData. Ej: "DocDate ge '2026-05-01' and DocDate le '2026-05-31'"
-- **select**: campos separados por coma. Ej: "DocDate,DocTotal,CardName"
+- **select**: campos separados por coma. Ej: "DocDate,DocTotal,CardName". ⚠️ Son nombres de propiedad OData, NO columnas SQL de la tabla cruda (ej: para descuento total de cabecera de una factura usa 'TotalDiscount', nunca 'DiscSum' — ese es el nombre de la columna SQL de OINV, ver SCHEMA DE TABLAS CORE. SAP responde 400 "Property ... is invalid" si se mezclan).
 - **top**: max resultados (1–500, default 50)
 - **skip**: offset para paginación
 - **orderby**: campo + asc/desc. Ej: "DocDate desc"
@@ -684,7 +685,7 @@ GROUP BY SlpCode
 - OCRD.CardType en SQL: 'C' = cliente, 'S' = proveedor, 'L' = lead/prospecto. NO uses 'cCustomer' (ese es el valor OData).
 - OINV.CANCELED: 'N' = factura válida, 'Y' = cancelada. ORCT.Canceled: 'N'/'Y'. Siempre filtra AND CANCELED = 'N'.
 - GrssProfit SOLO existe en INV1 (líneas). NO en OINV (cabecera).
-- **OData y SQLQueries pueden usar esquemas de nombres de columna DISTINTOS para la misma entidad SAP.** Ejemplo confirmado: el entity OData "Resources" usa Code/Name/Group/UnitOfMeasure, pero la tabla SQL real ORSC usa ResCode/ResName/ResGrpCod (prefijo Res*). No asumas que un nombre de campo OData sirve para consultar_sql, ni viceversa — si no está en el schema de esta sección, usa descubrir_esquema.
+- **OData y SQLQueries pueden usar esquemas de nombres de columna DISTINTOS para la misma entidad SAP.** Ejemplo confirmado: el entity OData "Resources" usa Code/Name/Group/UnitOfMeasure, pero la tabla SQL real ORSC usa ResCode/ResName/ResGrpCod (prefijo Res*). Otro ejemplo confirmado: OINV.DiscSum (SQL) es TotalDiscount en OData (obtener_documento/listar_registros contra ventas/facturas, entidad Invoices). No asumas que un nombre de campo OData sirve para consultar_sql, ni viceversa — si no está en el schema de esta sección, usa descubrir_esquema.
 - Presenta siempre los resultados con contexto: totales, variaciones, interpretación del negocio.
 
 ---
