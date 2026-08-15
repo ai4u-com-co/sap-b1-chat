@@ -28,7 +28,7 @@ import { ENTITY_MAP } from "@ai4u/contracts"
 import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type CatalogEntry } from "@/lib/chat/system-prompt"
 import { fetchSapContext } from "@/lib/chat/sap-context"
 import { getTenantBackend } from "@/lib/tenant-backends"
-import { buildDocUrl } from "@/lib/chat/odata-url"
+import { fetchDocumentoConFallback } from "@/lib/chat/obtener-documento"
 import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
 
 export const maxDuration = 300
@@ -388,7 +388,8 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             description:
               "Obtiene el detalle completo de un documento de negocio por su ID. Las líneas (DocumentLines) vienen incluidas automáticamente, no hace falta pedirlas por expand. " +
               "Dominios: ventas/pedidos, ventas/facturas, compras/ordenes, inventario/items, socios/clientes, socios/proveedores. " +
-              "Si existe una tool de detalle específica para el dominio (detalle_pedido, detalle_orden_compra, detalle_orden_produccion, detalle_producto), prefiere esa — devuelve el documento ya enriquecido en vez de la respuesta OData cruda.",
+              "Si existe una tool de detalle específica para el dominio (detalle_pedido, detalle_orden_compra, detalle_orden_produccion, detalle_producto), prefiere esa — devuelve el documento ya enriquecido en vez de la respuesta OData cruda. " +
+              "Si 'select'/'expand' incluyen un campo inválido (SAP los rechaza), se reintenta automáticamente sin filtros y se devuelve el documento completo.",
             inputSchema: z.object({
               endpoint: z.string().describe("Dominio sin tenant. Ej: 'ventas/pedidos', 'inventario/items'"),
               id: z.string().describe("DocEntry numérico o código string"),
@@ -402,9 +403,17 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               }
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Obteniendo documento ${id}…` } } as never)
               try {
-                const odataPath = buildDocUrl(entityKey, id, expand, select)
-                const data = await client.odata<unknown>(odataPath)
-                return { document: data }
+                const { document, fallbackSinFiltros } = await fetchDocumentoConFallback(
+                  (path) => client.odata<unknown>(path), entityKey, id, expand, select
+                )
+                if (fallbackSinFiltros) {
+                  writer.write({ type: "data-tool-status", data: { toolCallId, text: "SAP rechazó los campos solicitados, se devolvió el documento completo." } } as never)
+                  return {
+                    document,
+                    note: "SAP rechazó el 'select'/'expand' pedido (probablemente un nombre de campo OData incorrecto) — se devolvió el documento completo sin filtrar.",
+                  }
+                }
+                return { document }
               } catch (err) {
                 return classifySapError(err)
               }
