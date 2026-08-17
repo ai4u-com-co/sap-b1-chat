@@ -29,6 +29,7 @@ import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type
 import { fetchSapContext } from "@/lib/chat/sap-context"
 import { getTenantBackend } from "@/lib/tenant-backends"
 import { fetchDocumentoConFallback } from "@/lib/chat/obtener-documento"
+import { fetchListarRegistrosConFallback } from "@/lib/chat/listar-registros"
 import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
 
 export const maxDuration = 300
@@ -77,25 +78,6 @@ function classifySapError(err: unknown): { error: SapError } {
   if (msg.includes("404"))
     return { error: { code: "SAP_NOT_FOUND", message: msg, retryable: false } }
   return { error: { code: "SAP_ERROR", message: msg, retryable: false } }
-}
-
-// ── OData URL builders ───────────────────────────────────────────
-function buildODataUrl(entityKey: string, query: Record<string, string>): string {
-  const parts: string[] = []
-  const top = Math.min(parseInt(query.top ?? "50", 10) || 50, 500)
-  parts.push(`$top=${top}`)
-  if (query.skip) parts.push(`$skip=${query.skip}`)
-  const cfg = ENTITY_MAP[entityKey]
-  const filters: string[] = []
-  if (cfg?.defaultFilter) filters.push(cfg.defaultFilter)
-  if (query.filter) filters.push(query.filter)
-  if (filters.length) parts.push(`$filter=${filters.join(" and ")}`)
-  const select = query.select || cfg?.selectDefault
-  if (select) parts.push(`$select=${select}`)
-  if (query.orderby) parts.push(`$orderby=${query.orderby}`)
-  if (query.expand) parts.push(`$expand=${query.expand}`)
-  const sapEntity = cfg?.sapEntity ?? entityKey
-  return `/${sapEntity}?${parts.join("&")}`
 }
 
 // ── Keywords para selección de modelo ────────────────────────────
@@ -424,7 +406,8 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             description:
               "Lista documentos de negocio con filtros: pedidos, facturas, órdenes de compra, clientes, inventario. " +
               "Dominios: ventas/pedidos, ventas/facturas, ventas/cotizaciones, compras/ordenes, inventario/items, socios/clientes, socios/proveedores, pagos/cobros. " +
-              "Si existe una tool específica para el dominio (listar_pedidos para ventas/pedidos, ordenes_compra para compras/ordenes, ordenes_produccion para producción), prefiere esa — tiene filtros de negocio más simples que la sintaxis OData de esta tool.",
+              "Si existe una tool específica para el dominio (listar_pedidos para ventas/pedidos, ordenes_compra para compras/ordenes, ordenes_produccion para producción), prefiere esa — tiene filtros de negocio más simples que la sintaxis OData de esta tool. " +
+              "Si 'select'/'expand' incluyen un campo inválido (SAP los rechaza), se reintenta automáticamente sin esos dos parámetros — el 'filter' pedido nunca se modifica ni se ignora.",
             inputSchema: z.object({
               endpoint: z.string().describe("Ruta sin tenant. Ej: 'ventas/facturas'"),
               filter: z.string().optional().describe("Filtro OData. Ej: \"DocDate ge '2026-05-01'\""),
@@ -448,11 +431,19 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               )
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Consultando ${entityKey}…` } } as never)
               try {
-                const odataPath = buildODataUrl(entityKey, query)
-                const data = await client.odata<{ value?: unknown[] }>(odataPath)
-                const rows = data.value ?? []
-                writer.write({ type: "data-tool-status", data: { toolCallId, text: `${rows.length} registros encontrados` } } as never)
-                return { rows, count: rows.length }
+                const { rows, count, fallbackSinFiltrosDeCampos } = await fetchListarRegistrosConFallback(
+                  (path) => client.odata<{ value?: unknown[] }>(path), entityKey, query
+                )
+                if (fallbackSinFiltrosDeCampos) {
+                  writer.write({ type: "data-tool-status", data: { toolCallId, text: `SAP rechazó los campos solicitados, se devolvieron ${count} registros sin filtrar campos.` } } as never)
+                  return {
+                    rows,
+                    count,
+                    note: "SAP rechazó el 'select'/'expand' pedido (probablemente un nombre de campo OData incorrecto) — se devolvieron los registros sin esos filtros de campo. El 'filter' pedido se mantuvo intacto.",
+                  }
+                }
+                writer.write({ type: "data-tool-status", data: { toolCallId, text: `${count} registros encontrados` } } as never)
+                return { rows, count }
               } catch (err) {
                 return classifySapError(err)
               }
