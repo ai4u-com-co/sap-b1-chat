@@ -386,7 +386,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Obteniendo documento ${id}…` } } as never)
               try {
                 const { document, fallbackSinFiltros } = await fetchDocumentoConFallback(
-                  (path) => client.odata<unknown>(path), entityKey, id, expand, select
+                  (path) => client.get<unknown>(path), entityKey, id, expand, select
                 )
                 if (fallbackSinFiltros) {
                   writer.write({ type: "data-tool-status", data: { toolCallId, text: "SAP rechazó los campos solicitados, se devolvió el documento completo." } } as never)
@@ -432,7 +432,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Consultando ${entityKey}…` } } as never)
               try {
                 const { rows, count, fallbackSinFiltrosDeCampos } = await fetchListarRegistrosConFallback(
-                  (path) => client.odata<{ value?: unknown[] }>(path), entityKey, query
+                  (path) => client.get<{ data?: unknown[] }>(path), entityKey, query
                 )
                 if (fallbackSinFiltrosDeCampos) {
                   writer.write({ type: "data-tool-status", data: { toolCallId, text: `SAP rechazó los campos solicitados, se devolvieron ${count} registros sin filtrar campos.` } } as never)
