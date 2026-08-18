@@ -33,6 +33,17 @@ import { buildDocUrl } from "@/lib/chat/odata-url"
  * `select`/`expand`, se reintenta UNA vez pidiendo el documento COMPLETO
  * (sin filtros) — siempre válido, porque no depende de adivinar nombres de
  * campo — y se devuelve ese documento en vez de fallar la respuesta entera.
+ *
+ * Migración 2026-08-18 (ver `lib/chat/odata-url.ts`): `fetchOData` ya no
+ * pega contra el proxy passthrough `/odata` sino contra la ruta REST
+ * genérica del gateway (`handleGet` en `sap-b1-backend/lib/sap/handler.ts`,
+ * `GET /api/v1/{tenant}/{entityKey}/{id}`), que devuelve el documento SAP
+ * directo (mismo shape que antes, sin wrapper) y ya resuelve del lado del
+ * servidor el `$expand` inválido (`mergeSelectAndExpand`, PR #124 mergeado
+ * en sap-b1-backend) — por eso `buildDocUrl` ya no traduce `DocumentLines`
+ * client-side. Este fallback SIGUE haciendo falta: sigue siendo posible que
+ * SAP rechace un `$select` con un nombre de campo inventado (columna SQL
+ * confundida con propiedad OData), caso no relacionado con `expand`.
  */
 
 /** Substring literal del JSON de error del gateway cuando SAP rechaza una

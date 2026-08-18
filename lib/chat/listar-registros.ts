@@ -23,6 +23,17 @@ import { SAP_QUERY_ERROR_MARKER } from "@/lib/chat/obtener-documento"
  * el usuario. Por eso el fallback es de dos escalones, y el segundo NUNCA
  * toca el `$filter`:
  *
+ * Migración 2026-08-18 (ver `lib/chat/odata-url.ts`): `fetchOData` ya no
+ * pega contra el proxy `/odata` (shape OData crudo `{value:[...]}`) sino
+ * contra la ruta REST genérica del gateway (`handleList` en
+ * `sap-b1-backend/lib/sap/handler.ts`), que envuelve la lista en
+ * `{data:[...], meta:{count,top,skip,hasMore}}`. Este archivo sigue
+ * necesitando el mismo fallback de dos escalones: aunque `mergeSelectAndExpand`
+ * ya resuelve del lado del servidor el caso `$expand` inválido, un `$select`
+ * con un nombre de campo inventado (ej. columna SQL confundida con propiedad
+ * OData, ver `sap_b1_chat_prompt_column_fixes` en la memoria del agente
+ * sap-experto) sigue siendo rechazado por SAP tal cual.
+ *
  * 1. Si SAP rechaza la consulta y el pedido traía `select`/`expand`: se
  *    reintenta quitando SOLO esos dos parámetros — es seguro porque preserva
  *    el `$filter` (mismo conjunto de filas) y de paso resuelve la
@@ -52,19 +63,23 @@ export interface ListarRegistrosOutcome {
 /**
  * Ejecuta `listar_registros` con reintento automático sin `select`/`expand`.
  *
- * `fetchOData` es una función inyectada (normalmente `client.odata`) para
+ * `fetchOData` es una función inyectada (normalmente `client.get` sobre la
+ * ruta REST del gateway, antes era `client.odata` contra el proxy) para
  * poder testear la lógica de reintento sin depender de un servidor SAP real
  * — mismo patrón que `fetchDocumentoConFallback` en `lib/chat/obtener-documento.ts`.
+ * El shape de respuesta esperado es el envelope REST de `handleList`
+ * (`{data:[...], meta:{count,...}}`), no el `{value:[...]}` OData crudo del
+ * proxy viejo.
  */
 export async function fetchListarRegistrosConFallback(
-  fetchOData: (odataPath: string) => Promise<{ value?: unknown[] }>,
+  fetchOData: (path: string) => Promise<{ data?: unknown[] }>,
   entityKey: string,
   query: Record<string, string>
 ): Promise<ListarRegistrosOutcome> {
   const primaryUrl = buildODataUrl(entityKey, query)
   try {
-    const data = await fetchOData(primaryUrl)
-    const rows = data.value ?? []
+    const res = await fetchOData(primaryUrl)
+    const rows = res.data ?? []
     return { rows, count: rows.length }
   } catch (err) {
     const hadFieldFilters = Boolean(query.select) || Boolean(query.expand)
@@ -80,8 +95,8 @@ export async function fetchListarRegistrosConFallback(
     const fallbackUrl = buildODataUrl(entityKey, rest)
     // Si esto también falla, se propaga tal cual — no hay un tercer intento
     // ni degradación del filter.
-    const data = await fetchOData(fallbackUrl)
-    const rows = data.value ?? []
+    const res = await fetchOData(fallbackUrl)
+    const rows = res.data ?? []
     return { rows, count: rows.length, fallbackSinFiltrosDeCampos: true }
   }
 }

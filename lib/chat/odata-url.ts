@@ -1,68 +1,71 @@
-import { ENTITY_MAP } from "@ai4u/contracts"
+/**
+ * Construye rutas REST del gateway `sap-b1-backend` para las tools
+ * `obtener_documento` y `listar_registros` del chat.
+ *
+ * Migración 2026-08-18: antes estas funciones armaban una URL OData cruda
+ * (`/{sapEntity}(id)?$expand=...`) que se mandaba tal cual al proxy
+ * passthrough `GET /api/v1/{tenant}/odata?path=...`, sin ninguna
+ * protección — cualquier `$expand` inválido (ej. `DocumentLines`, que en
+ * SAP Service Layer es `Property(Collection(...))` del EntityType
+ * `Document`, no `NavigationProperty`) llegaba a SAP tal cual y volvía un
+ * 400 crudo.
+ *
+ * Ahora se usan las rutas REST genéricas del gateway (`handleList`/
+ * `handleGet` en `sap-b1-backend/lib/sap/handler.ts`), montadas 1:1 por
+ * cada clave de `ENTITY_MAP` (`GET /api/v1/{tenant}/{entityKey}` y
+ * `GET /api/v1/{tenant}/{entityKey}/{id}`). Esas rutas YA resuelven del
+ * lado del servidor lo que antes se parcheaba a mano acá:
+ * `mergeSelectAndExpand()` (sap-b1-backend PR #124, mergeado — commit
+ * `979f66a`) fusiona CUALQUIER `$expand` recibido en el `$select` final
+ * antes de pedirlo a SAP, nunca arma un `$expand` real — cubre la familia
+ * entera de "Property(Collection) tratada como NavigationProperty" para
+ * las ~37 entidades de `ENTITY_MAP`, no solo `DocumentLines`. Por eso acá
+ * ya NO hace falta ninguna traducción especial de `expand` — se pasa tal
+ * cual, confiando en el backend.
+ *
+ * El backend también aplica su propio `entity.defaultFilter` (ej. `CardType
+ * eq 'cCustomer'` para `socios/clientes`) y `entity.selectDefault` cuando el
+ * caller no manda `$select` — por eso estas funciones YA NO replican esa
+ * lógica (antes duplicada acá porque el proxy `/odata` no conocía
+ * `ENTITY_MAP`). Evita doble aplicación y evita que este archivo dependa de
+ * una copia de `ENTITY_MAP` que puede desincronizarse de la del backend.
+ */
 
 /**
- * Construye la URL OData para obtener un documento por su ID (usada por el
- * tool `obtener_documento` del chat).
+ * Construye la ruta REST para obtener UN documento por su ID — usada por el
+ * tool `obtener_documento` vía `lib/chat/obtener-documento.ts`.
  *
- * DocumentLines es una `Property(Collection(...))` del EntityType base
- * `Document` en SAP Service Layer, NO una `NavigationProperty`:
- * `$expand=DocumentLines` es rechazado con 400 "Cannot expand invalid
- * navigation property 'DocumentLines' for entity type 'Document'"
- * (confirmado en producción, tenant flexo, docEntry 2170/2171). Como
- * Property normal, ya viene incluida en una respuesta completa (sin
- * `$select`) — y si se usa `$select`, basta con sumarla a la lista de
- * campos. Mismo patrón que ProductionOrderLines/ProductionOrdersStages
- * (mission-control PR #261), y mismo `$select` ya usado en producción para
- * `Invoices` en `sap-b1-backend` (`lib/capabilities/quality-certificate.ts`,
- * `lib/capabilities/production-costs.ts`).
+ * `entityKey` es la clave española de `ENTITY_MAP` (ej. "ventas/facturas"),
+ * que coincide 1:1 con el segmento de ruta real del gateway — no hace falta
+ * resolver `sapEntity`/`keyType` acá, eso lo hace el backend.
  */
 export function buildDocUrl(entityKey: string, id: string, expand?: string, select?: string): string {
-  const cfg = ENTITY_MAP[entityKey]
-  const sapEntity = cfg?.sapEntity ?? entityKey
-  const key = cfg?.keyType === "string" ? `('${encodeURIComponent(id)}')` : `(${id})`
-  const expandFields = expand ? expand.split(",").map((f) => f.trim()).filter(Boolean) : []
-  const realExpand = expandFields.filter((f) => f !== "DocumentLines")
-  const wantsDocumentLines = expandFields.includes("DocumentLines")
-  const selectFields = select ? select.split(",").map((f) => f.trim()).filter(Boolean) : []
-  // Solo se agrega DocumentLines a $select si ya había un $select parcial —
-  // si no había ninguno, no se agrega uno solo con DocumentLines: eso
-  // restringiría la respuesta a únicamente esa colección, perdiendo el resto
-  // de campos del documento que un GET sin $select trae por defecto.
-  if (wantsDocumentLines && selectFields.length > 0 && !selectFields.includes("DocumentLines")) {
-    selectFields.push("DocumentLines")
-  }
-  const parts: string[] = []
-  if (realExpand.length) parts.push(`$expand=${realExpand.join(",")}`)
-  if (selectFields.length) parts.push(`$select=${selectFields.join(",")}`)
-  return `/${sapEntity}${key}${parts.length ? "?" + parts.join("&") : ""}`
+  const params = new URLSearchParams()
+  if (select) params.set("$select", select)
+  if (expand) params.set("$expand", expand)
+  const qs = params.toString()
+  return `/${entityKey}/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`
 }
 
 /**
- * Construye la URL OData para listar registros de una entidad (usada por el
- * tool `listar_registros` del chat, vía `lib/chat/listar-registros.ts`).
+ * Construye la ruta REST para listar registros de una entidad — usada por
+ * el tool `listar_registros` vía `lib/chat/listar-registros.ts`.
  *
- * A diferencia de `buildDocUrl` (un único documento), acá NO se traduce
- * `expand='DocumentLines'` a `$select` — para una lista, degradar/reescribir
- * el `$select`/`$expand` a ciegas puede ser incorrecto según la entidad
- * (`DocumentLines` no es una property del EntityType de colección, ej.
- * `Invoices` en plural). El fallback ante un `$select`/`$expand` rechazado
- * por SAP vive en `fetchListarRegistrosConFallback` (reintento SIN esos
- * parámetros), no acá.
+ * `top` se sanitiza client-side igual que antes (clamp 1–500, default 50)
+ * porque el backend hace `parseInt(...)` sin `|| default` — un valor no
+ * numérico llegaría como `$top=NaN` a la URL. El resto de parámetros
+ * (`filter`, `select`, `expand`, `orderby`, `skip`) se pasan tal cual: el
+ * backend ya valida/completa lo que haga falta (defaultFilter, selectDefault,
+ * merge de expand en select).
  */
 export function buildODataUrl(entityKey: string, query: Record<string, string>): string {
-  const parts: string[] = []
+  const params = new URLSearchParams()
   const top = Math.min(parseInt(query.top ?? "50", 10) || 50, 500)
-  parts.push(`$top=${top}`)
-  if (query.skip) parts.push(`$skip=${query.skip}`)
-  const cfg = ENTITY_MAP[entityKey]
-  const filters: string[] = []
-  if (cfg?.defaultFilter) filters.push(cfg.defaultFilter)
-  if (query.filter) filters.push(query.filter)
-  if (filters.length) parts.push(`$filter=${filters.join(" and ")}`)
-  const select = query.select || cfg?.selectDefault
-  if (select) parts.push(`$select=${select}`)
-  if (query.orderby) parts.push(`$orderby=${query.orderby}`)
-  if (query.expand) parts.push(`$expand=${query.expand}`)
-  const sapEntity = cfg?.sapEntity ?? entityKey
-  return `/${sapEntity}?${parts.join("&")}`
+  params.set("$top", String(top))
+  if (query.skip) params.set("$skip", query.skip)
+  if (query.filter) params.set("$filter", query.filter)
+  if (query.select) params.set("$select", query.select)
+  if (query.orderby) params.set("$orderby", query.orderby)
+  if (query.expand) params.set("$expand", query.expand)
+  return `/${entityKey}?${params.toString()}`
 }

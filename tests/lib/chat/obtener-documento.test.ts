@@ -13,13 +13,18 @@ import { describe, it, expect, vi } from "vitest"
  *
  * `fetchDocumentoConFallback` es la función real usada por el tool
  * `obtener_documento` (app/api/chat/route.ts) para reintentar sin filtros.
+ *
+ * Migración 2026-08-18: `fetchOData` ya no pega contra el proxy `/odata`
+ * sino contra la ruta REST del gateway (`GET /api/v1/{tenant}/{entityKey}/{id}`,
+ * `handleGet`), que devuelve el documento SAP directo — mismo shape que
+ * antes, así que el parsing de `document` no cambia.
  */
 
 const { fetchDocumentoConFallback, SAP_QUERY_ERROR_MARKER } = await import("@/lib/chat/obtener-documento")
 
 function gatewayError(code: string, status = 502): Error {
   return new Error(
-    `Backend GET /odata?path=%2FInvoices(2170) (${status}): {"error":"SAP rechazó la consulta.","code":"${code}"}`
+    `Backend GET /ventas/facturas/2170 (${status}): {"error":"SAP rechazó la consulta.","code":"${code}"}`
   )
 }
 
@@ -76,6 +81,22 @@ describe("fetchDocumentoConFallback", () => {
       fetchDocumentoConFallback(fetchOData, "ventas/facturas", "2170", undefined, "DocDate,DiscSum")
     ).rejects.toThrow()
     expect(fetchOData).toHaveBeenCalledTimes(2)
+  })
+
+  it("expand='DocumentLines' YA NO se traduce client-side ni dispara fallback — se manda tal cual, lo resuelve el backend REST", async () => {
+    // Antes de la migración, `buildDocUrl` movía 'DocumentLines' de expand a
+    // select a mano. Ahora la ruta REST del gateway (handleGet) fusiona
+    // cualquier $expand en $select del lado del servidor
+    // (mergeSelectAndExpand, sap-b1-backend PR #124) — el primer intento ya
+    // funciona sin necesidad de ningún tratamiento especial acá.
+    const fetchOData = vi.fn().mockResolvedValue({ DocEntry: 2170, DocumentLines: [{ ItemCode: "X" }] })
+
+    const result = await fetchDocumentoConFallback(fetchOData, "ventas/facturas", "2170", "DocumentLines")
+
+    expect(fetchOData).toHaveBeenCalledTimes(1)
+    expect(result.fallbackSinFiltros).toBeUndefined()
+    const url = decodeURIComponent(fetchOData.mock.calls[0][0] as string)
+    expect(url).toContain("$expand=DocumentLines")
   })
 
   it("también reintenta cuando lo rechazado fue el expand (no solo el select)", async () => {
