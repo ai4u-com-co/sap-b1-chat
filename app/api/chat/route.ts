@@ -31,6 +31,7 @@ import { getTenantBackend } from "@/lib/tenant-backends"
 import { fetchDocumentoConFallback } from "@/lib/chat/obtener-documento"
 import { fetchListarRegistrosConFallback } from "@/lib/chat/listar-registros"
 import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
+import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
 
 export const maxDuration = 300
 
@@ -156,11 +157,22 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   // Cualquier otra tabla exige pasar por `descubrir_esquema` primero.
   const discoveredTables = new Set<string>(SCHEMA_DOCUMENTED_TABLES)
 
-  // Anthropic key per tenant
-  const anthropicKey =
-    process.env[`${tenantId.toUpperCase()}_ANTHROPIC_API_KEY`] ??
-    process.env.ANTHROPIC_API_KEY ??
-    ""
+  // Anthropic key per tenant. Se loguea de qué env var salió y su fingerprint
+  // (prefijo+sufijo, formato del Console) para poder saber a qué ORGANIZACIÓN
+  // de Anthropic pertenece sin exponer el secreto — ver lib/chat/anthropic-errors.ts.
+  const resolvedKey = resolveAnthropicKey(tenantId)
+  if (resolvedKey.source === "none") {
+    apiCtx.log.error(
+      { tenantId, keyEnv: resolvedKey.envName },
+      "chat: no hay API key de Anthropic configurada para el tenant"
+    )
+  } else {
+    apiCtx.log.info(
+      { tenantId, keySource: resolvedKey.source, keyEnv: resolvedKey.envName, keyFingerprint: resolvedKey.fingerprint, selectedModel },
+      "chat: key de Anthropic resuelta"
+    )
+  }
+  const anthropicKey = resolvedKey.key
 
   const anthropic = createAnthropic({ apiKey: anthropicKey })
 
@@ -245,9 +257,10 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
         // como excepción (no hay forma de esperar al modelo antes de responder),
         // solo lo emite como chunk de error dentro del stream.
         onError: ({ error }) => {
+          const classified = classifyAnthropicError(error, { tenantId })
           apiCtx.log.error(
-            { err: error, tenantId, sessionId, selectedModel },
-            "chat: error durante streaming (Anthropic/tool loop)"
+            { err: error, tenantId, sessionId, selectedModel, ...anthropicErrorLogFields(classified, resolvedKey) },
+            `chat: error durante streaming (Anthropic/tool loop) [${classified.code}]`
           )
         },
         // cacheControl NO va aquí (global) — se marca por-mensaje en systemMessages.
@@ -1153,15 +1166,20 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
       // un part { type: "error" } dentro del propio stream de toUIMessageStream,
       // y el default de la librería `ai` lo reemplaza por el string genérico
       // "An error occurred." antes de que llegue al cliente. Acá lo logueamos
-      // completo (server-side) y devolvemos al cliente el mensaje real del
-      // error — no hay credenciales ni datos de SAP en err.message, viene del
-      // SDK de Anthropic o del tool-loop, no de responses de negocio.
+      // completo (server-side) con su clasificación (billing / auth / rate
+      // limit / ...) y el fingerprint de la key, y devolvemos al cliente un
+      // mensaje en español que conserva el texto crudo de Anthropic entre
+      // paréntesis — no hay credenciales ni datos de SAP en err.message, viene
+      // del SDK de Anthropic o del tool-loop, no de responses de negocio.
       for await (const chunk of result.toUIMessageStream({
         sendReasoning: true,
         onError: (error) => {
-          const message = error instanceof Error ? error.message : String(error)
-          apiCtx.log.error({ err: error, tenantId, sessionId }, "chat: error en toUIMessageStream (streaming Anthropic)")
-          return message
+          const classified = classifyAnthropicError(error, { tenantId })
+          apiCtx.log.error(
+            { err: error, tenantId, sessionId, selectedModel, ...anthropicErrorLogFields(classified, resolvedKey) },
+            `chat: error en toUIMessageStream (streaming Anthropic) [${classified.code}]`
+          )
+          return classified.userMessage
         },
       })) {
         writer.write(chunk)

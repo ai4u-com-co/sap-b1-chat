@@ -1,11 +1,12 @@
 import { createAnthropic } from "@ai-sdk/anthropic"
-import { withApiHandler } from "@ai4u/platform/http"
+import { withApiHandler, type ApiContext } from "@ai4u/platform/http"
 import { generateText, Output } from "ai"
 import { z } from "zod"
 import { getTenantProfile } from "@/lib/chat/tenant-profiles"
 import { getTenantBackend } from "@/lib/tenant-backends"
 import { getApiKey, getTenantId } from "@/app/lib/session"
 import { verifyInternalSecret } from "@/lib/internal-auth"
+import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
 
 // ─── /api/suggestions ────────────────────────────────────────────────────────
 // Genera 4 preguntas estratégicas de negocio para el tenant activo mediante una
@@ -65,7 +66,7 @@ Criterios:
 Ejemplos del estilo esperado: "¿Cómo van las ventas de este mes?", "¿Qué clientes me deben más?", "¿Qué productos dejan más margen?".`
 }
 
-export const POST = withApiHandler(async (req: Request) => {
+export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const body = await req.json().catch(() => ({}))
 
   // Auth: x-internal-secret de Mission Control, o sesión directa
@@ -84,11 +85,10 @@ export const POST = withApiHandler(async (req: Request) => {
     return Response.json({ questions: MAGDALENA_SUGGESTIONS, generatedAt: Date.now(), source: "static" })
   }
 
-  const anthropicKey =
-    process.env[`${tenantId.toUpperCase()}_ANTHROPIC_API_KEY`] ??
-    process.env.ANTHROPIC_API_KEY ??
-    ""
+  const resolvedKey = resolveAnthropicKey(tenantId)
+  const anthropicKey = resolvedKey.key
   if (!anthropicKey) {
+    apiCtx.log.warn({ tenantId, keyEnv: resolvedKey.envName }, "suggestions: sin API key de Anthropic, usando fallback")
     return Response.json({ questions: FALLBACK, generatedAt: Date.now(), source: "fallback" })
   }
 
@@ -121,7 +121,15 @@ export const POST = withApiHandler(async (req: Request) => {
       return Response.json({ questions: FALLBACK, generatedAt: Date.now(), source: "fallback" })
     }
     return Response.json({ questions, generatedAt: Date.now(), source: "llm" })
-  } catch {
+  } catch (err) {
+    // Antes este catch era silencioso: un error de billing/auth de Anthropic
+    // se veía solo como "preguntas genéricas" — síntoma invisible del mismo
+    // problema que tumba /api/chat. Ahora queda clasificado en platform_logs.
+    const classified = classifyAnthropicError(err, { tenantId })
+    apiCtx.log.error(
+      { err, tenantId, ...anthropicErrorLogFields(classified, resolvedKey) },
+      `suggestions: fallo Anthropic, usando fallback [${classified.code}]`
+    )
     return Response.json({ questions: FALLBACK, generatedAt: Date.now(), source: "fallback" })
   }
 }, { label: "POST suggestions" }) as (req: Request) => Promise<Response>
