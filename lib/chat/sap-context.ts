@@ -1,4 +1,5 @@
 import type { BackendClient } from "@ai4u/contracts"
+import { withSapTimeout } from "./with-timeout"
 
 export interface Warehouse { code: string; name: string }
 export interface SalesPerson { code: number; name: string }
@@ -23,9 +24,14 @@ interface CacheEntry { context: SapContext; expiresAt: number }
 const cache = new Map<string, CacheEntry>()
 const TTL_MS = 60 * 60 * 1000
 
+// withSapTimeout: mismo mecanismo de protección que las tools de route.ts — este
+// fetch corre ANTES de que arranque streamText (ver fetchSapContext más abajo),
+// justo después de escribir el primer "data-status" ("Conectando a SAP B1…") al
+// stream ya iniciado. Si se cuelga sin timeout propio, el usuario se queda con
+// ese mensaje congelado exactamente igual que con una tool colgada.
 async function safeGet<T>(client: BackendClient, path: string): Promise<T[]> {
   try {
-    const res = await client.get<{ value?: T[] }>(path)
+    const res = await withSapTimeout(client.get<{ value?: T[] }>(path))
     return res.value ?? []
   } catch {
     return []
