@@ -98,6 +98,28 @@ describe("logToolCallResult", () => {
     expect(insert).toHaveBeenCalledWith(sampleRow)
   })
 
+  it("reporta por onError el { error } que devuelve supabase-js (no lanza: RLS, FK, columna inexistente)", async () => {
+    const dbError = { code: "42501", message: "new row violates row-level security policy" }
+    const insert = vi.fn().mockResolvedValue({ error: dbError })
+    const onError = vi.fn()
+    await logToolCallResult({ from: vi.fn().mockReturnValue({ insert }) }, sampleRow, onError)
+    expect(onError).toHaveBeenCalledWith(dbError)
+  })
+
+  it("reporta por onError también cuando la inserción lanza", async () => {
+    const insert = vi.fn().mockRejectedValue(new Error("red caída"))
+    const onError = vi.fn()
+    await logToolCallResult({ from: vi.fn().mockReturnValue({ insert }) }, sampleRow, onError)
+    expect(onError).toHaveBeenCalledTimes(1)
+  })
+
+  it("no llama a onError cuando la inserción sale bien", async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null })
+    const onError = vi.fn()
+    await logToolCallResult({ from: vi.fn().mockReturnValue({ insert }) }, sampleRow, onError)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
   it("nunca revienta si la inserción falla (best-effort, igual que el resto de escrituras a Supabase en route.ts)", async () => {
     const client = { from: vi.fn().mockReturnValue({ insert: vi.fn().mockRejectedValue(new Error("db down")) }) }
     await expect(logToolCallResult(client, sampleRow)).resolves.toBeUndefined()

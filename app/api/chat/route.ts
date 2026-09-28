@@ -34,7 +34,7 @@ import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql
 import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
 import { classifyColumnNotFound } from "@/lib/chat/sql-error-hints"
 import { withSapTimeout } from "@/lib/chat/with-timeout"
-import { buildToolCallLogRow, logToolCallResult } from "@/lib/chat/tool-call-log"
+import { createChatPersistence, type PersistDb } from "@/lib/chat/persistence"
 
 export const maxDuration = 300
 
@@ -241,35 +241,21 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const isComplexQuery = complexReportKeywords.some((kw) => userTextNorm.includes(kw))
 
   // ── Persistencia temprana de sesión + mensaje de usuario ─────────
-  // Antes vivía dentro de onFinish (solo corría si el turno completaba). Se
-  // adelanta acá — ANTES de que arranque el tool loop — por dos razones:
-  // 1. Un turno que muere a mitad (timeout de withSapTimeout, o cualquier otro
-  //    fallo que mate el stream) ya no pierde el rastro del session/mensaje.
-  // 2. `chat_tool_calls` (ver experimental_onToolCallFinish más abajo) tiene FK
-  //    a chat_sessions — la sesión debe existir ANTES del primer tool call, no
-  //    recién al final.
-  if (supabase && sessionId && userId) {
-    const title = userText.length > 44 ? userText.slice(0, 43) + "…" : userText || "Nueva conversación"
-    try {
-      await supabase.from("chat_sessions").upsert({
-        id: sessionId,
-        tenant_id: tenantId,
-        user_id: userId,
-        title: title,
-        updated_at: new Date().toISOString()
-      }, { onConflict: "id" })
-    } catch {}
-
-    if (lastUserMsg) {
-      try {
-        await supabase.from("chat_messages").insert({
-          session_id: sessionId,
-          role: "user",
-          content: userContent
-        })
-      } catch {}
-    }
-  }
+  // Se hace ANTES del tool loop por dos razones:
+  // 1. Un turno que muere a mitad (timeout de withSapTimeout u otro fallo que
+  //    mate el stream) no pierde el rastro de la sesión ni del mensaje.
+  // 2. `chat_tool_calls` tiene FK a chat_sessions: la sesión debe existir antes
+  //    del primer tool call.
+  // Ver lib/chat/persistence.ts (ids, tenant, columnas reales y por qué se
+  // reportan los errores de la base en vez de tragarlos).
+  const persistence = createChatPersistence({
+    db: supabase as unknown as PersistDb | null,
+    log: apiCtx.log,
+    tenantId,
+    userId,
+    threadId: sessionId,
+  })
+  await persistence.start({ userText })
 
   // Resolución segura de modelo + effort + thinking (clampea al set válido del
   // modelo, nunca produce un 400). El cliente puede pedir cualquier modelo/effort.
@@ -367,20 +353,9 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
         messages: [...systemMessages, ...allMessages],
         stopWhen: stepCountIs(maxSteps),
         onFinish: async ({ text, toolCalls, toolResults }) => {
-          // La sesión y el mensaje de usuario ya se persistieron ANTES del tool
-          // loop (ver bloque "Persistencia temprana" más arriba) — acá solo
-          // queda insertar el mensaje final del asistente, igual que antes.
-          if (supabase && sessionId && userId && (text || (toolCalls && toolCalls.length > 0))) {
-            try {
-              await supabase.from("chat_messages").insert({
-                session_id: sessionId,
-                role: "assistant",
-                content: text,
-                tool_calls: toolCalls,
-                tool_results: toolResults
-              })
-            } catch {}
-          }
+          // La sesión y el mensaje de usuario ya se persistieron antes del tool
+          // loop — acá solo queda el mensaje final del asistente.
+          await persistence.saveAssistant({ text, toolCalls, toolResults, modelId: selectedModel })
         },
         // Trazabilidad incremental (Fix #2, incidente 2026-08-31): cada tool
         // call queda registrado en `chat_tool_calls` apenas termina (éxito o
@@ -388,20 +363,16 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
         // falla a mitad de camino deja huella de qué SÍ alcanzó a hacer. Único
         // punto de enganche, no toca ninguna de las ~30 tools individuales.
         experimental_onToolCallFinish: async (event) => {
-          if (!supabase || !sessionId) return
-          const row = buildToolCallLogRow({
-            sessionId,
-            tenantId,
+          await persistence.saveToolCall({
             toolName: event.toolCall.toolName,
             toolCallId: event.toolCall.toolCallId,
             stepNumber: event.stepNumber,
             durationMs: event.durationMs,
             input: event.toolCall.input,
-            sdkSuccess: event.success,
+            success: event.success,
             output: event.success ? event.output : undefined,
             error: event.success ? undefined : event.error,
           })
-          await logToolCallResult(supabase, row)
         },
         // Sin este onError, un fallo de Anthropic (rate limit, timeout, etc.) a
         // mitad del stream no se loguea en ningún lado: streamText no lo lanza

@@ -31,7 +31,7 @@ export interface ToolCallLogRow {
 // servir de storage completo de resultados SAP.
 const MAX_JSON_CHARS = 8000
 
-function truncateForStorage(value: unknown): unknown {
+export function truncateForStorage(value: unknown): unknown {
   if (value === undefined) return null
   let json: string
   try {
@@ -102,17 +102,27 @@ export interface ToolCallLogClient {
 // fila (best-effort) y el turno sigue sin verse afectado.
 const LOG_INSERT_TIMEOUT_MS = 5_000
 
-export async function logToolCallResult(client: ToolCallLogClient, row: ToolCallLogRow): Promise<void> {
+export async function logToolCallResult(
+  client: ToolCallLogClient,
+  row: ToolCallLogRow,
+  onError?: (error: unknown) => void,
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout>
   try {
-    await Promise.race([
+    const res = await Promise.race([
       client.from("chat_tool_calls").insert(row),
       new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error("chat_tool_calls insert timeout")), LOG_INSERT_TIMEOUT_MS)
       }),
     ])
-  } catch {
+    // supabase-js NO lanza ante un fallo de la base (RLS, FK, columna inexistente):
+    // devuelve `{ error }`. Sin este chequeo esos fallos eran invisibles — así
+    // estuvo la tabla vacía sin que nadie lo notara.
+    const dbError = (res as { error?: unknown } | null | undefined)?.error
+    if (dbError) onError?.(dbError)
+  } catch (err) {
     // Best-effort: un fallo (o timeout) al loguear nunca debe romper el turno del chat.
+    onError?.(err)
   } finally {
     clearTimeout(timer!)
   }
