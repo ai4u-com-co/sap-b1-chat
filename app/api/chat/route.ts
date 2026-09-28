@@ -32,6 +32,7 @@ import { fetchDocumentoConFallback } from "@/lib/chat/obtener-documento"
 import { fetchListarRegistrosConFallback } from "@/lib/chat/listar-registros"
 import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
 import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
+import { classifyColumnNotFound } from "@/lib/chat/sql-error-hints"
 import { withSapTimeout } from "@/lib/chat/with-timeout"
 import { buildToolCallLogRow, logToolCallResult } from "@/lib/chat/tool-call-log"
 
@@ -74,6 +75,11 @@ type SapError = { code: string; message: string; retryable: boolean }
 
 function classifySapError(err: unknown): { error: SapError } {
   const msg = err instanceof Error ? err.message : String(err)
+  // Primero y por patrón específico ("Column 'X' from table 'T' not exist"): los
+  // `includes("401")`/`includes("404")` de abajo pueden dar falsos positivos con
+  // dígitos que aparezcan en el texto del error de SAP.
+  const columnError = classifyColumnNotFound(msg)
+  if (columnError) return { error: columnError }
   if (msg.includes("timeout"))
     return { error: { code: "SAP_TIMEOUT", message: "SAP B1 no respondió en el tiempo esperado.", retryable: true } }
   if (msg.includes("401") || msg.toLowerCase().includes("login"))
