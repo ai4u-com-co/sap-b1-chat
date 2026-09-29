@@ -85,7 +85,9 @@ export function buildToolCallLogRow(args: {
     tool_name: toolName,
     tool_call_id: toolCallId,
     step_number: stepNumber ?? null,
-    duration_ms: durationMs,
+    // El SDK da milisegundos con decimales (performance.now); la columna es integer
+    // y Postgres rechazaba TODO insert con 22P02 (verificado en prod, 29-sep).
+    duration_ms: Math.max(0, Math.round(durationMs)),
     success: sdkSuccess && !looksLikeToolError(effectiveOutput),
     input: truncateForStorage(input),
     output: truncateForStorage(effectiveOutput),
