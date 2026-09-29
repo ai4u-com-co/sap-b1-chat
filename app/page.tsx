@@ -8,12 +8,13 @@ import {
   isToolUIPart,
   isReasoningUIPart,
   isFileUIPart,
-  getToolName,
   convertFileListToFileUIParts,
   type FileUIPart,
 } from "ai"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { MarkdownContent } from "./components/MarkdownContent"
+import { ToolSteps } from "./components/ToolSteps"
+import { useElapsed } from "./hooks/useElapsed"
 import { useThreads, type Thread } from "./hooks/useThreads"
 import { useSuggestions } from "./hooks/useSuggestions"
 import { ChangelogPill } from "@/components/ChangelogPill"
@@ -27,15 +28,6 @@ import {
   type EffortLevel,
 } from "@/lib/chat/models"
 
-
-const TOOL_LABELS: Record<string, string> = {
-  consultar_sql:       "Consultando SQL SAP",
-  obtener_documento:   "Obteniendo documento",
-  listar_registros:    "Listando registros",
-  crear_documento:     "Preparando documento",
-  actualizar_documento: "Actualizando documento",
-  ejecutar_accion:     "Ejecutando acción",
-}
 
 // Modelos y effort vienen del registro único (lib/chat/models.ts).
 type ModelId = string
@@ -78,21 +70,6 @@ function estimateTokens(msgs: ReturnType<typeof useChat>["messages"]): number {
       sum + msg.parts.reduce((s, p) => s + (isTextUIPart(p) ? p.text.length : 60), 0)
     , 0) / 4
   )
-}
-
-// ─── Hook: cronómetro para tool calls pendientes ──────────────────────────────
-function useElapsed(active: boolean): number {
-  const [elapsed, setElapsed] = useState(0)
-  const startRef = useRef<number | null>(null)
-  useEffect(() => {
-    if (!active) { startRef.current = null; setElapsed(0); return }
-    startRef.current = Date.now()
-    const id = setInterval(() => {
-      if (startRef.current !== null) setElapsed(Math.floor((Date.now() - startRef.current) / 1000))
-    }, 500)
-    return () => clearInterval(id)
-  }, [active])
-  return elapsed
 }
 
 // ─── TypingIndicator ──────────────────────────────────────────────────────────
@@ -513,6 +490,7 @@ function ChatUI() {
                 onRegen={() => regenerate()}
                 onEdit={msg.role === "user" ? () => handleEditMessage(idx) : undefined}
                 isLoading={isLoading}
+                streaming={isLastAssistant && isLoading}
               />
             )
           })}
@@ -784,114 +762,6 @@ function SuggestionsPanel({
   )
 }
 
-// ─── ToolCallStep ─────────────────────────────────────────────────────────────
-function ToolCallStep({
-  part,
-  toolStatusText,
-  onRetry,
-}: {
-  part: ReturnType<typeof useChat>["messages"][number]["parts"][number]
-  toolStatusText?: string
-  onRetry?: () => void
-}) {
-  const [expanded, setExpanded] = useState(false)
-
-  // isToolUIPart(part) decide si el resto del componente tiene algo que
-  // renderizar, pero los Hooks deben llamarse siempre en el mismo orden —
-  // por eso useElapsed corre acá, antes de cualquier return condicional,
-  // con isPending=false (seguro: useElapsed(false) resetea a 0 y no arranca
-  // el interval) cuando part no es un tool UI part (bug real corregido:
-  // react-hooks/rules-of-hooks, "Hook llamado condicionalmente").
-  const isPart = isToolUIPart(part)
-  const inv = isPart
-    ? (part as unknown as {
-        state: string
-        input?: unknown
-        output?: {
-          sapDuration?: number
-          error?: { code?: string; message?: string; retryable?: boolean }
-          [k: string]: unknown
-        }
-        errorText?: string
-      })
-    : null
-  const outputError  = inv?.output?.error
-  const isError      = inv?.state === "output-error" || !!outputError
-  const isDone       = inv?.state === "output-available" && !outputError
-  const isPending    = isPart && !isDone && !isError
-  const elapsed      = useElapsed(isPending)
-
-  if (!isPart || !inv) return null
-
-  const name = getToolName(part)
-  const label = TOOL_LABELS[name] ?? name
-
-  const sapDuration  = inv.output?.sapDuration
-  const isRetryable  = outputError?.retryable === true
-
-  return (
-    <div style={ss.toolStep}>
-      <button
-        style={ss.toolStepHeader}
-        onClick={() => (isDone || isError) && setExpanded((v) => !v)}
-        disabled={!isDone && !isError}
-      >
-        <span style={{
-          color: isError ? "var(--ai4u-orange)" : isDone ? "var(--ai4u-text-secondary)" : "var(--ai4u-cadet-gray)",
-          animation: isPending ? "pulse 1.4s ease-in-out infinite" : undefined,
-        }}>
-          {isError ? "✗" : isDone ? "✓" : "●"}
-        </span>
-        <span style={{ flex: 1, textAlign: "left" as const }}>{label}</span>
-
-        {/* Progreso en tiempo real (data-tool-status) */}
-        {isPending && toolStatusText && (
-          <span style={{ fontSize: 10, color: "var(--ai4u-cadet-gray)", fontStyle: "italic", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-            {toolStatusText}
-          </span>
-        )}
-
-        {/* Cronómetro cuando no hay status text */}
-        {isPending && !toolStatusText && elapsed > 0 && (
-          <span style={{ fontSize: 10, color: "var(--ai4u-cadet-gray)", fontFamily: TYPOGRAPHY_TOKENS.fontFamily.code }}>
-            {elapsed}s
-          </span>
-        )}
-
-        {/* Duración real SAP al completar */}
-        {isDone && sapDuration !== undefined && (
-          <span style={{ fontSize: 10, color: "var(--ai4u-cadet-gray)", fontFamily: TYPOGRAPHY_TOKENS.fontFamily.code }}>
-            · {(sapDuration / 1000).toFixed(1)}s SAP
-          </span>
-        )}
-
-        {(isDone || isError) && (
-          <span style={{ fontSize: 10, color: "var(--ai4u-cadet-gray)" }}>
-            {expanded ? "▲" : "▼"}
-          </span>
-        )}
-      </button>
-
-      {expanded && (isDone || isError) && inv.output !== undefined && (
-        <pre style={ss.toolOutput}>
-          {typeof inv.output === "string" ? inv.output : JSON.stringify(inv.output, null, 2)}
-        </pre>
-      )}
-
-      {isError && (
-        <div style={{ ...ss.toolError, display: "flex", alignItems: "center", gap: 8 }}>
-          <span>{outputError?.message ?? inv.errorText}</span>
-          {isRetryable && onRetry && (
-            <button onClick={onRetry} style={{ ...ss.microBtn, color: "var(--ai4u-orange)", flexShrink: 0 }}>
-              ↺ Reintentar
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ─── ReasoningBlock ───────────────────────────────────────────────────────────
 function ReasoningBlock({ text, streaming }: { text: string; streaming?: boolean }) {
   const [open, setOpen] = useState(false)
@@ -921,6 +791,7 @@ function MessageBubble({
   onRegen,
   onEdit,
   isLoading,
+  streaming,
 }: {
   role: "user" | "assistant"
   parts: ReturnType<typeof useChat>["messages"][number]["parts"]
@@ -930,6 +801,8 @@ function MessageBubble({
   onRegen: () => void
   onEdit?: () => void
   isLoading: boolean
+  /** true si ESTE mensaje todavía se está generando (último del asistente en streaming). */
+  streaming: boolean
 }) {
   const [copied, setCopied] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -1001,19 +874,12 @@ function MessageBubble({
 
       {/* Tool calls */}
       {toolParts.length > 0 && (
-        <div style={ss.toolStepList}>
-          {toolParts.map((p, i) => {
-            const callId = (p as unknown as { toolCallId?: string }).toolCallId ?? ""
-            return (
-              <ToolCallStep
-                key={i}
-                part={p}
-                toolStatusText={toolStatusByCallId.get(callId)}
-                onRetry={onRegen}
-              />
-            )
-          })}
-        </div>
+        <ToolSteps
+          parts={toolParts}
+          toolStatusByCallId={toolStatusByCallId}
+          streaming={streaming}
+          onRetry={onRegen}
+        />
       )}
 
       {/* File attachments */}
@@ -1169,13 +1035,6 @@ const ss: Record<string, React.CSSProperties> = {
   ghostBtn: { background: "transparent", color: "var(--ai4u-text-secondary)", border: "1px solid var(--ai4u-border-color)", borderRadius: 8, padding: "6px 12px", fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" as const },
   stopBtn: { background: "rgba(255,110,0,0.08)", color: "var(--ai4u-orange)", border: "1px solid rgba(255,110,0,0.30)", borderRadius: 8, padding: "10px 18px", fontSize: 14, cursor: "pointer", fontWeight: 500, fontFamily: "inherit", whiteSpace: "nowrap" as const },
   statusStrip: { display: "flex", alignItems: "center", gap: 7, padding: "5px 20px", fontSize: 11, color: "var(--ai4u-cadet-gray)", background: "var(--ai4u-bg-surface)", borderTop: "1px solid var(--ai4u-border-color)", flexShrink: 0 },
-
-  // Tool steps
-  toolStepList: { display: "flex", flexDirection: "column" as const, gap: 4, marginBottom: 10, borderLeft: "2px solid var(--ai4u-border-color)", paddingLeft: 10 },
-  toolStep: { fontSize: 12, color: "var(--ai4u-text-secondary)" },
-  toolStepHeader: { display: "flex", alignItems: "center", gap: 6, background: "transparent", border: "none", cursor: "pointer", fontFamily: "inherit", fontSize: 12, color: "var(--ai4u-text-secondary)", padding: "3px 0", width: "100%", textAlign: "left" as const },
-  toolOutput: { fontSize: 11, fontFamily: "monospace", background: "rgba(0,0,0,0.04)", borderRadius: 6, padding: "8px 10px", overflowX: "auto" as const, maxHeight: 200, overflowY: "auto" as const, marginTop: 4, color: "var(--ai4u-text-secondary)" },
-  toolError: { fontSize: 11, color: "var(--ai4u-orange)", marginTop: 4, paddingLeft: 4 },
 
   // Attachment UI
   clipBtn: { background: "transparent", border: "1px solid var(--ai4u-border-color)", borderRadius: 8, padding: "8px 10px", fontSize: 16, cursor: "pointer", flexShrink: 0, lineHeight: 1, color: "var(--ai4u-text-secondary)", alignSelf: "flex-end" as const },
