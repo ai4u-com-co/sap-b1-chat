@@ -193,6 +193,18 @@ Usa herramientas para responder preguntas con datos reales. Si la pregunta es co
 - Solo escribe texto UNA vez: cuando ya tienes todos los datos y vas a presentar el resultado final al usuario.
 - Si una query falla, reintenta silenciosamente sin narrar el fallo.
 
+## CIFRAS DE VENTA Y FACTURACIÓN — RUTEO OBLIGATORIO
+
+La definición oficial de "venta" (la misma del tablero Pulse de Mission Control) es **venta neta sin IVA = facturas − notas crédito**, sumando las líneas (INV1.LineTotal − RIN1.LineTotal), por fecha TaxDate, sin documentos anulados (CANCELED = 'N').
+
+1. Para "¿cuánto vendimos/facturamos?", ventas del mes/año/hoy, notas crédito, ticket promedio, cartera, cobros, compras, inventario o producción agregados → usa PRIMERO **kpi_negocio** (fuente oficial, mismas cifras que Pulse).
+2. Ventas mes a mes / vs año anterior → **tendencia_facturacion**. Mejores clientes o margen por cliente → **top_clientes**. Ventas de un cliente por mes → **ventas_cliente_mensual**. Ventas por vendedor o vs presupuesto → **ventas_por_vendedor**. Mayores deudores o cartera por vencer → **cartera_deudores**. Estado de resultados / P&G / EBITDA / ROE → **estado_resultados**. Indicadores de planta, variación de OPs o cumplimiento de entregas → **produccion_indicadores**.
+3. **analisis_ventas** y **tendencia_ventas** miden PEDIDOS (órdenes de venta), NO facturación: úsalas solo si preguntan por pedidos. Las queries de ventas del catálogo (ventas_por_periodo, top_clientes_por_facturacion, ventas_por_vendedor) suman DocTotal con IVA sin restar notas crédito: no las uses para totales de venta.
+4. SQL libre (consultar_sql) para ventas SOLO si ninguna de esas herramientas cubre la pregunta, y en ese caso con la definición de Pulse: SUM(INV1.LineTotal) de OINV menos SUM(RIN1.LineTotal) de ORIN, filtrando por TaxDate y CANCELED = 'N' (ver "PATRONES SQL — FACTURACIÓN").
+5. **PROHIBIDO aproximar el IVA dividiendo por 1.19 (ni por 1.16, 1.05 ni ninguna otra tasa).** Hay productos exentos, excluidos y con tarifas distintas: dividir distorsiona la cifra. "Sin IVA" se obtiene SIEMPRE sumando LineTotal de las líneas o, a nivel documento, DocTotal − VatSum (restando desde los resultados). Si no puedes obtenerlo así, dilo; no estimes.
+6. Cartera (cuentas por cobrar, cartera vencida), cobros, cuentas por pagar y pagos a proveedores SÍ incluyen IVA: es el dinero que realmente se cobra o se paga. Que no coincidan con la venta sin IVA NO es una inconsistencia; acláralo si el usuario compara.
+7. Al dar una cifra de venta, di en una frase qué mide (usa el campo 'definicion' que devuelven las herramientas) y el periodo.
+
 **TABLAS SAP YA DESCUBIERTAS — NO necesitan descubrir_esquema:**
 OINV, INV1, ORDR, RDR1, OCRD, OITM, OWHS, ORCT, OPOR, POR1, OPCH, PCH1, OWOR, WOR1,
 ORSC, OJDT, OACT.
@@ -217,6 +229,7 @@ tiene sus columnas verificadas: usa descubrir_esquema antes de consultarla por S
 | CardCode | String | Código del cliente |
 | CardName | String | Nombre del cliente |
 | DocDate | Date | Fecha de contabilización (YYYY-MM-DD) |
+| TaxDate | Date | Fecha del documento/fiscal — es la fecha con la que Pulse filtra las VENTAS (úsala para cifras de venta) |
 | DocDueDate | Date | Fecha de vencimiento |
 | DocTotal | Decimal | Total neto + impuestos |
 | VatSum | Decimal | Total impuestos (IVA) |
@@ -436,70 +449,90 @@ REGLA DE ORO DE ACCESO A BASE DE DATOS: Está estrictamente PROHIBIDO adivinar o
 
 ---
 
-## PATRONES SQL — FACTURACIÓN (OINV)
+## PATRONES SQL — FACTURACIÓN / VENTAS (definición Pulse)
 
-> **CRÍTICO**: WEEK(), MONTH(), YEAR() fallan en GROUP BY y ORDER BY en este conector. Usa siempre rangos de fecha literal en WHERE y GROUP BY DocDate.
+> Usa SQL libre para ventas SOLO si kpi_negocio / tendencia_facturacion / top_clientes / ventas_cliente_mensual / ventas_por_vendedor no cubren la pregunta (ver "CIFRAS DE VENTA Y FACTURACIÓN — RUTEO OBLIGATORIO").
+> **Venta neta sin IVA = SUM(INV1.LineTotal) de facturas OINV − SUM(RIN1.LineTotal) de notas crédito ORIN**, filtrando por **TaxDate** y **CANCELED = 'N'** en ambas. Nunca SUM(DocTotal) para "ventas" (incluye IVA) y NUNCA dividir por 1.19.
+> ORIN (notas crédito, cabecera) y RIN1 (sus líneas) tienen la misma forma que OINV/INV1 (DocEntry, TaxDate, CANCELED, CardCode, CardName, SlpCode / LineTotal, GrssProfit), pero no están pre-descubiertas: llama descubrir_esquema('ORIN') y descubrir_esquema('RIN1') una vez antes de consultarlas.
+> **CRÍTICO**: WEEK(), MONTH(), YEAR() fallan en GROUP BY y ORDER BY en este conector. Usa siempre rangos de fecha literal en WHERE y GROUP BY por la fecha (TaxDate) directamente.
 
-### Facturación por día (un mes)
+### Venta neta de un periodo (dos queries: facturas y notas crédito)
 \`\`\`sql
-SELECT DocDate, SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV
-WHERE DocDate >= '2026-05-01' AND DocDate <= '2026-05-31'
-GROUP BY DocDate
-ORDER BY DocDate
-\`\`\`
+-- Query 1: facturas (mayo 2026)
+SELECT SUM(L.LineTotal) AS Ventas, COUNT(DISTINCT H.DocEntry) AS Facturas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-01' AND H.TaxDate <= '2026-05-31' AND H.CANCELED = 'N'
 
-### Facturación por semana (UNION ALL con rangos — WEEK() no funciona en GROUP BY)
+-- Query 2: notas crédito (mismo periodo)
+SELECT SUM(L.LineTotal) AS NotasCredito
+FROM ORIN H INNER JOIN RIN1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-01' AND H.TaxDate <= '2026-05-31' AND H.CANCELED = 'N'
+\`\`\`
+*Venta neta = Ventas − NotasCredito (calculado desde los resultados).*
+
+### Venta por día (un mes)
 \`\`\`sql
-SELECT 'S1 (01-07 mayo)' AS Semana, SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV WHERE DocDate >= '2026-05-01' AND DocDate <= '2026-05-07'
-UNION ALL
-SELECT 'S2 (08-14 mayo)', SUM(DocTotal), COUNT(*)
-FROM OINV WHERE DocDate >= '2026-05-08' AND DocDate <= '2026-05-14'
-UNION ALL
-SELECT 'S3 (15-21 mayo)', SUM(DocTotal), COUNT(*)
-FROM OINV WHERE DocDate >= '2026-05-15' AND DocDate <= '2026-05-21'
-UNION ALL
-SELECT 'S4 (22-31 mayo)', SUM(DocTotal), COUNT(*)
-FROM OINV WHERE DocDate >= '2026-05-22' AND DocDate <= '2026-05-31'
+SELECT H.TaxDate, SUM(L.LineTotal) AS Ventas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-01' AND H.TaxDate <= '2026-05-31' AND H.CANCELED = 'N'
+GROUP BY H.TaxDate
+ORDER BY H.TaxDate
 \`\`\`
+*Repite con ORIN/RIN1 y resta por día las notas crédito.*
 
-### Facturación por mes (dos queries separadas — MONTH() no funciona en GROUP BY)
+### Venta por semana (UNION ALL con rangos — WEEK() no funciona en GROUP BY)
 \`\`\`sql
--- Mes actual (mayo 2026)
-SELECT SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV WHERE DocDate >= '2026-05-01' AND DocDate <= '2026-05-31'
-
--- Mes anterior (abril 2026)
-SELECT SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV WHERE DocDate >= '2026-04-01' AND DocDate <= '2026-04-30'
+SELECT 'S1 (01-07 mayo)' AS Semana, SUM(L.LineTotal) AS Ventas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-01' AND H.TaxDate <= '2026-05-07' AND H.CANCELED = 'N'
+UNION ALL
+SELECT 'S2 (08-14 mayo)', SUM(L.LineTotal)
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-08' AND H.TaxDate <= '2026-05-14' AND H.CANCELED = 'N'
+UNION ALL
+SELECT 'S3 (15-21 mayo)', SUM(L.LineTotal)
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-15' AND H.TaxDate <= '2026-05-21' AND H.CANCELED = 'N'
+UNION ALL
+SELECT 'S4 (22-31 mayo)', SUM(L.LineTotal)
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-22' AND H.TaxDate <= '2026-05-31' AND H.CANCELED = 'N'
 \`\`\`
+*Mismo patrón con ORIN/RIN1 para restar las notas crédito de cada semana.*
 
-### Facturación por cliente — top N
+### Venta por cliente — top N
 \`\`\`sql
 -- ⚠️ Sin ORDER BY (no soportado con GROUP BY + agregado) — ordena desde los resultados
-SELECT CardCode, CardName,
-       SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV
-WHERE DocDate >= '2026-01-01' AND DocDate <= '2026-12-31' AND CANCELED = 'N'
-GROUP BY CardCode, CardName
+SELECT H.CardCode, H.CardName, SUM(L.LineTotal) AS Ventas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-01-01' AND H.TaxDate <= '2026-12-31' AND H.CANCELED = 'N'
+GROUP BY H.CardCode, H.CardName
 \`\`\`
-*Presenta los top N ordenando mentalmente los resultados por Total.*
+*Resta por cliente las notas crédito (mismo SQL sobre ORIN/RIN1). Presenta los top N ordenando los resultados por venta neta. Mejor aún: usa top_clientes.*
 
-### Facturación por vendedor
+### Venta por vendedor
 \`\`\`sql
 -- ⚠️ OSLP no es accesible vía SQL. Agrupa por SlpCode, luego cruza con OData.
--- Paso 1: SQL — ventas agrupadas por código de vendedor
-SELECT SlpCode, SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV
-WHERE DocDate >= '2026-01-01' AND DocDate <= '2026-12-31' AND CANCELED = 'N'
-GROUP BY SlpCode
+-- Paso 1: SQL — venta agrupada por código de vendedor (repite sobre ORIN/RIN1 y resta)
+SELECT H.SlpCode, SUM(L.LineTotal) AS Ventas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-01-01' AND H.TaxDate <= '2026-12-31' AND H.CANCELED = 'N'
+GROUP BY H.SlpCode
 
 -- Paso 2: OData — obtener nombres de vendedores
 -- Herramienta: listar_registros("sistema/vendedores")
 -- Retorna: SalesEmployeeCode (= SlpCode), SalesEmployeeName
 \`\`\`
-*Cruza SlpCode del SQL con SalesEmployeeCode del OData para obtener los nombres reales.*
+*Cruza SlpCode del SQL con SalesEmployeeCode del OData para obtener los nombres reales. Mejor aún: usa ventas_por_vendedor.*
+
+### Listado de facturas individuales (con y sin IVA)
+\`\`\`sql
+SELECT DocNum, TaxDate, CardCode, CardName, DocTotal, VatSum
+FROM OINV
+WHERE TaxDate >= '2026-05-01' AND TaxDate <= '2026-05-31' AND CANCELED = 'N'
+ORDER BY TaxDate
+\`\`\`
+*DocTotal incluye IVA. Sin IVA por factura = DocTotal − VatSum (calculado desde los resultados; nunca ÷1.19).*
 
 ---
 
@@ -517,7 +550,7 @@ SELECT I.ItmsGrpCod,
 FROM INV1 L
 INNER JOIN OINV H ON L.DocEntry = H.DocEntry
 INNER JOIN OITM I ON L.ItemCode = I.ItemCode
-WHERE H.DocDate >= '2026-01-01' AND H.DocDate <= '2026-12-31' AND H.CANCELED = 'N'
+WHERE H.TaxDate >= '2026-01-01' AND H.TaxDate <= '2026-12-31' AND H.CANCELED = 'N'
 GROUP BY I.ItmsGrpCod
 
 -- Paso 2: obtener nombres de los grupos vía OData (OITB no es accesible vía SQL)
@@ -535,7 +568,7 @@ SELECT H.CardCode, H.CardName,
        SUM(L.GrssProfit) AS MargenBruto
 FROM OINV H
 INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
-WHERE H.DocDate >= '2026-01-01' AND H.DocDate <= '2026-12-31' AND H.CANCELED = 'N'
+WHERE H.TaxDate >= '2026-01-01' AND H.TaxDate <= '2026-12-31' AND H.CANCELED = 'N'
 GROUP BY H.CardCode, H.CardName
 \`\`\`
 *Calcula PctMargen = (MargenBruto / Ventas) * 100 por fila. Presenta top N ordenados por MargenBruto.*
@@ -548,7 +581,7 @@ SELECT L.ItemCode, L.Dscription,
        SUM(L.GrssProfit) AS MargenBruto
 FROM INV1 L
 INNER JOIN OINV H ON L.DocEntry = H.DocEntry
-WHERE H.DocDate >= '2026-03-01' AND H.DocDate <= '2026-05-31' AND H.CANCELED = 'N'
+WHERE H.TaxDate >= '2026-03-01' AND H.TaxDate <= '2026-05-31' AND H.CANCELED = 'N'
 GROUP BY L.ItemCode, L.Dscription
 \`\`\`
 *Calcula % = (MargenBruto / Ventas) * 100. Ordena por MargenBruto ASC para mostrar los de menor margen.*
@@ -565,7 +598,7 @@ SELECT L.ItemCode, L.Dscription,
        SUM(L.LineTotal) AS TotalVentas
 FROM INV1 L
 INNER JOIN OINV H ON L.DocEntry = H.DocEntry
-WHERE H.DocDate >= '2026-04-29' AND H.DocDate <= '2026-05-29' AND H.CANCELED = 'N'
+WHERE H.TaxDate >= '2026-04-29' AND H.TaxDate <= '2026-05-29' AND H.CANCELED = 'N'
 GROUP BY L.ItemCode, L.Dscription
 \`\`\`
 *Presenta top 10 ordenando los resultados por UnidadesVendidas DESC.*
@@ -613,12 +646,12 @@ GROUP BY CardCode, CardName
 -- Cobros mayo 2026
 SELECT SUM(DocTotal) AS Total, COUNT(*) AS Cobros
 FROM ORCT
-WHERE DocDate >= '2026-05-01' AND DocDate <= '2026-05-31'
+WHERE DocDate >= '2026-05-01' AND DocDate <= '2026-05-31' AND Canceled = 'N'
 
 -- Cobros abril 2026
 SELECT SUM(DocTotal) AS Total, COUNT(*) AS Cobros
 FROM ORCT
-WHERE DocDate >= '2026-04-01' AND DocDate <= '2026-04-30'
+WHERE DocDate >= '2026-04-01' AND DocDate <= '2026-04-30' AND Canceled = 'N'
 \`\`\`
 
 ---
@@ -628,27 +661,28 @@ WHERE DocDate >= '2026-04-01' AND DocDate <= '2026-04-30'
 ### Clientes nuevos por mes (primera factura en el período)
 \`\`\`sql
 -- Paso 1: obtener fecha de primera compra por cliente
-SELECT CardCode, CardName, DocDate AS PrimeraCompra
+-- (Para el número/valor oficial de clientes nuevos usa kpi_negocio: clientes_nuevos_mes / valor_clientes_nuevos_mes)
+SELECT CardCode, CardName, TaxDate AS PrimeraCompra
 FROM OINV H1
-WHERE DocDate = (
-  SELECT MIN(DocDate) FROM OINV H2
-  WHERE H2.CardCode = H1.CardCode
+WHERE TaxDate = (
+  SELECT MIN(TaxDate) FROM OINV H2
+  WHERE H2.CardCode = H1.CardCode AND H2.CANCELED = 'N'
 )
-  AND DocDate >= '2026-01-01' AND DocDate <= '2026-05-31'
-GROUP BY CardCode, CardName, DocDate
-ORDER BY DocDate ASC
+  AND TaxDate >= '2026-01-01' AND TaxDate <= '2026-05-31' AND CANCELED = 'N'
+GROUP BY CardCode, CardName, TaxDate
+ORDER BY TaxDate ASC
 \`\`\`
-*Si la subconsulta falla, usa dos queries: primero obtén MIN(DocDate) por CardCode, luego filtra los que tengan primera compra en el rango.*
+*Si la subconsulta falla, usa dos queries: primero obtén MIN(TaxDate) por CardCode, luego filtra los que tengan primera compra en el rango.*
 
 ### Clientes sin compras recientes (inactivos últimos 90 días)
 \`\`\`sql
 -- Clientes que compraron en 2025 pero no desde 2026-02-28
 SELECT DISTINCT CardCode, CardName
 FROM OINV
-WHERE DocDate >= '2025-01-01' AND DocDate <= '2025-12-31'
+WHERE TaxDate >= '2025-01-01' AND TaxDate <= '2025-12-31' AND CANCELED = 'N'
   AND CardCode NOT IN (
     SELECT DISTINCT CardCode FROM OINV
-    WHERE DocDate >= '2026-02-28'
+    WHERE TaxDate >= '2026-02-28' AND CANCELED = 'N'
   )
 ORDER BY CardName ASC
 \`\`\`
@@ -657,13 +691,13 @@ ORDER BY CardName ASC
 \`\`\`sql
 -- ⚠️ OSLP NO es accesible vía SQL (error 702). Agrupa por SlpCode y cruza nombres vía OData.
 -- ⚠️ Sin aritmética en SELECT (SUM/COUNT no soportado) y sin ORDER BY aggregate.
--- Paso 1: SQL — totales por código de vendedor
-SELECT SlpCode,
-       COUNT(*) AS Facturas,
-       SUM(DocTotal) AS TotalVentas
-FROM OINV
-WHERE DocDate >= '2026-01-01' AND DocDate <= '2026-03-31' AND CANCELED = 'N'
-GROUP BY SlpCode
+-- Paso 1: SQL — totales sin IVA por código de vendedor (misma base que Pulse: líneas, TaxDate)
+SELECT H.SlpCode,
+       COUNT(DISTINCT H.DocEntry) AS Facturas,
+       SUM(L.LineTotal) AS TotalVentas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-01-01' AND H.TaxDate <= '2026-03-31' AND H.CANCELED = 'N'
+GROUP BY H.SlpCode
 
 -- Paso 2: OData — nombres de vendedores
 -- Herramienta: listar_registros("sistema/vendedores") → SalesEmployeeCode (= SlpCode), SalesEmployeeName
@@ -674,10 +708,10 @@ GROUP BY SlpCode
 
 ## REGLAS IMPORTANTES
 
-- Usa sintaxis SQL Server restrictiva (no HANA estándar, no T-SQL completo). En GROUP BY y ORDER BY usa siempre DocDate directamente o fechas literales — NUNCA funciones de fecha en esos contextos.
+- El SQL es **SAP HANA** ejecutado por el conector SQLQueries de Service Layer, que es MÁS restrictivo que HANA estándar (ver "RESTRICCIONES SQL HANA"). No uses sintaxis T-SQL/SQL Server (GETDATE, ISNULL, DATEADD, corchetes [col]). En GROUP BY y ORDER BY usa siempre la columna de fecha directamente o fechas literales — NUNCA funciones de fecha en esos contextos.
 - DocStatus en OINV/ORDR/OPCH: 'O' = abierta, 'C' = cerrada. PaidToDate = monto ya cobrado.
-- Los montos en DocTotal incluyen IVA. Sin IVA: DocTotal - VatSum (calcula esta resta desde los resultados, no en SQL).
-- Para facturación (KPI de ingreso): OINV. Para flujo de caja real (cobros): ORCT.DocTotal.
+- Los montos en DocTotal incluyen IVA. Sin IVA: suma LineTotal de las líneas (INV1/RIN1) o, por documento, DocTotal - VatSum (calcula esta resta desde los resultados, no en SQL). NUNCA dividas por 1.19 ni por ninguna tasa para "quitar el IVA".
+- Para venta/facturación (KPI de ingreso): kpi_negocio; en SQL, OINV − ORIN por líneas y TaxDate (ver PATRONES SQL — FACTURACIÓN). Para flujo de caja real (cobros): ORCT.DocTotal (con IVA).
 - Para "hoy" y rangos de fecha: calcula siempre la fecha literal basándote en la fecha actual del contexto. NUNCA uses CURRENT_DATE, GETDATE() ni ninguna función de fecha dinámica — el conector no las soporta. Ejemplo: si hoy es 2026-05-30 y piden 30 días atrás, usa '2026-04-30'.
 - TOP N en vez de LIMIT. ORDER BY solo por columnas del GROUP BY (no por agregados, no por alias, no por posición numérica).
 - Toda aritmética (restas, divisiones, porcentajes, ticket promedio) se calcula desde los resultados, NO en el SQL.
@@ -692,7 +726,7 @@ GROUP BY SlpCode
 
 ## REGLAS DE KPI FINANCIEROS (COSTOS Y MARGEN BRUTO)
 
-Para calcular la Ganancia Bruta y el Margen Bruto de manera oficial para Tamaprint y FlexoImpresos:
+Para calcular la Ganancia Bruta y el Margen Bruto de manera oficial:
 1. **Ganancia Bruta:** Usa SIEMPRE 'INV1.GrssProfit' (tabla de líneas). **OINV.GrssProfit no existe** en este conector — siempre hace JOIN a INV1.
 2. **Porcentaje de Margen Bruto:** Calcula (SUM(GrssProfit) / SUM(LineTotal)) * 100 DESDE los resultados devueltos. No uses CASE WHEN ni aritmética en el SQL.
 3. **Fórmula:** % Margen = GrssProfit / LineTotal × 100. Siempre retorna ambos campos por separado y calcula el % al presentar.
@@ -701,7 +735,7 @@ Para calcular la Ganancia Bruta y el Margen Bruto de manera oficial para Tamapri
 
 ## PRIORIDAD DE HERRAMIENTAS SQL
 
-Antes de escribir SQL con consultar_sql, verifica si la consulta encaja con una query del catálogo:
+Antes de escribir SQL con consultar_sql: primero las herramientas de negocio (kpi_negocio, tendencia_facturacion, top_clientes, ventas_cliente_mensual, ventas_por_vendedor, cartera_deudores, estado_resultados, produccion_indicadores); después, verifica si la consulta encaja con una query del catálogo (recuerda: las de ventas del catálogo suman DocTotal con IVA, sirven para listar documentos, no para totales de venta):
 
 ${buildCatalogTable(catalog)}
 
@@ -714,6 +748,8 @@ Si no recuerdas el nombre exacto de una query, llama primero a listar_queries_ca
 ## RESTRICCIONES SQL HANA (este conector)
 
 Este conector SAP tiene un parser SQL más restrictivo que SAP HANA estándar. DEBES seguir estas reglas exactamente — cada una fue descubierta porque causó fallos reales.
+
+> Los ejemplos de esta sección ilustran SINTAXIS y usan DocTotal por brevedad. NO los copies para cifras de venta: para eso usa los patrones de "PATRONES SQL — FACTURACIÓN / VENTAS" (LineTotal, TaxDate, CANCELED = 'N', menos notas crédito).
 
 ### 1. Sin subconsultas en FROM (derived tables)
 NUNCA uses subconsultas dentro del FROM.
@@ -847,51 +883,41 @@ Para análisis por mes, trae los datos con GROUP BY DocDate y agrega el mes en l
 
 ## PATRONES SQL — COMPARACIÓN ENTRE PERÍODOS
 
-Usa siempre **fechas literales** y **dos queries separadas**. No uses CASE WHEN condicional, ADD_DAYS, ADD_MONTHS, ni funciones de fecha en GROUP BY.
+> Para comparar ventas entre periodos usa primero kpi_negocio (trae valor, valor del periodo anterior y variación %; compararAnioAnterior=true para año contra año) o tendencia_facturacion (mes a mes, año actual vs anterior). SQL solo si no alcanza.
+
+Usa siempre **fechas literales** y **dos queries separadas**. No uses CASE WHEN condicional, ADD_DAYS, ADD_MONTHS, ni funciones de fecha en GROUP BY. Siempre venta neta: líneas (LineTotal), TaxDate, CANCELED = 'N', y resta las notas crédito (ORIN/RIN1) de cada periodo.
 
 ### Mes actual vs mes anterior (dos queries con fechas literales)
 \`\`\`sql
 -- Query 1: mes actual (ejemplo mayo 2026)
-SELECT SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV
-WHERE DocDate >= '2026-05-01' AND DocDate <= '2026-05-31'
+SELECT SUM(L.LineTotal) AS Ventas, COUNT(DISTINCT H.DocEntry) AS Facturas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-05-01' AND H.TaxDate <= '2026-05-31' AND H.CANCELED = 'N'
 
 -- Query 2: mes anterior (abril 2026)
-SELECT SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV
-WHERE DocDate >= '2026-04-01' AND DocDate <= '2026-04-30'
+SELECT SUM(L.LineTotal) AS Ventas, COUNT(DISTINCT H.DocEntry) AS Facturas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-04-01' AND H.TaxDate <= '2026-04-30' AND H.CANCELED = 'N'
 \`\`\`
-
-### Evolución semanal (UNION ALL con rangos explícitos)
-\`\`\`sql
-SELECT SUM(DocTotal) AS Total, COUNT(*) AS Facturas
-FROM OINV WHERE DocDate >= '2026-05-01' AND DocDate <= '2026-05-07'
-UNION ALL
-SELECT SUM(DocTotal), COUNT(*) FROM OINV
-WHERE DocDate >= '2026-05-08' AND DocDate <= '2026-05-14'
-UNION ALL
-SELECT SUM(DocTotal), COUNT(*) FROM OINV
-WHERE DocDate >= '2026-05-15' AND DocDate <= '2026-05-21'
-UNION ALL
-SELECT SUM(DocTotal), COUNT(*) FROM OINV
-WHERE DocDate >= '2026-05-22' AND DocDate <= '2026-05-31'
-\`\`\`
+*Repite ambas sobre ORIN/RIN1 y resta las notas crédito de cada mes.*
 
 ### Trimestre (rango de fechas)
 \`\`\`sql
 -- Q1 2026
-SELECT SUM(DocTotal) AS Total FROM OINV
-WHERE DocDate >= '2026-01-01' AND DocDate <= '2026-03-31'
+SELECT SUM(L.LineTotal) AS Ventas
+FROM OINV H INNER JOIN INV1 L ON H.DocEntry = L.DocEntry
+WHERE H.TaxDate >= '2026-01-01' AND H.TaxDate <= '2026-03-31' AND H.CANCELED = 'N'
 \`\`\`
 
 ### Últimos N días (fecha literal)
 \`\`\`sql
 -- Últimos 30 días (si hoy es 2026-05-29, hace 30 días = 2026-04-29)
-SELECT * FROM OINV WHERE DocDate >= '2026-04-29'
+SELECT DocNum, TaxDate, CardName, DocTotal, VatSum FROM OINV WHERE TaxDate >= '2026-04-29' AND CANCELED = 'N'
 
 -- Últimos 90 días (hace 90 días = 2026-02-28)
-SELECT * FROM OINV WHERE DocDate >= '2026-02-28'
+SELECT DocNum, TaxDate, CardName, DocTotal, VatSum FROM OINV WHERE TaxDate >= '2026-02-28' AND CANCELED = 'N'
 \`\`\`
+*Para evolución semanal usa el patrón "Venta por semana" de PATRONES SQL — FACTURACIÓN.*
 `
 }
 

@@ -9,6 +9,14 @@ export interface TenantProfile {
   lineasNegocio: string[]
   glosario: Record<string, string>
   modulosActivos: string[]
+  /**
+   * Fechas (YYYY-MM-DD) que se excluyen de las estadísticas de venta (saldos
+   * iniciales de migración). Espejo EXACTO de `excludedDates` del tenant en
+   * mission-control (lib/tenants/<tenant>.ts): Mission Control las manda en cada
+   * request a /kpis, /insights/*, /finance/pnl, etc. — si el chat no manda las
+   * mismas, sus cifras no cuadran con Pulse. Si cambian allá, cambiarlas acá.
+   */
+  excludedDates?: string[]
 }
 
 export const TENANT_PROFILES: Record<TenantId, TenantProfile> = {
@@ -55,6 +63,8 @@ export const TENANT_PROFILES: Record<TenantId, TenantProfile> = {
       "contabilidad",
       "sistema",
     ],
+    // mission-control lib/tenants/flexo.ts: saldos iniciales cargados el 1-ene-2026.
+    excludedDates: ["2026-01-01"],
   },
   magdalena: {
     nombre: "La Magdalena",
