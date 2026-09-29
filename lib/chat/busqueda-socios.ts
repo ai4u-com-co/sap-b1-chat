@@ -17,8 +17,13 @@
  *   contains/startswith) y no se pudo verificar en vivo contra los dos tenants; las
  *   variantes funcionan con cualquier collation de HANA sin depender de eso.
  * - Texto numérico (NIT/cédula, con puntos, espacios o dígito de verificación) →
- *   busca en LicTradNum (NIT) y CardCode (en Flexo los proveedores persona natural
+ *   busca en FederalTaxID (NIT) y CardCode (en Flexo los proveedores persona natural
  *   son "P" + cédula, p.ej. P8026979).
+ * - OData, no SQL: el NIT es la propiedad `FederalTaxID` de BusinessPartners. Su
+ *   columna SQL (OCRD) se llama `LicTradNum`, y usarla acá hizo fallar la búsqueda
+ *   en producción (Flexo 29-sep-2026, SAP -1000 "Property 'LicTradNum' of
+ *   'BusinessPartner' is invalid"). Toda propiedad de $select/$filter debe estar en
+ *   ODATA_PROPIEDADES_VERIFICADAS (lib/chat/odata-propiedades.ts); hay test.
  * - Toda variante se escapa ('' por ') DESPUÉS de generarla.
  *
  * Multitenant: no nombra tenants; el gateway resuelve la empresa por la API key.
@@ -125,17 +130,17 @@ export function buildBusquedaPath(tipo: TipoBusqueda, textoCrudo: string, top: n
     return { path, criterio: `ItemName/ItemCode contienen todas las palabras [${tokens.join(", ") || texto}] (sin distinguir mayúsculas ni orden)` }
   }
 
-  const select = "$select=CardCode,CardName,CardType,LicTradNum,Phone1,EmailAddress,CurrentAccountBalance"
+  const select = "$select=CardCode,CardName,CardType,FederalTaxID,Phone1,EmailAddress,CurrentAccountBalance"
   const tipoFilter =
     tipo === "cliente" ? "CardType eq 'cCustomer'" : tipo === "proveedor" ? "CardType eq 'cSupplier'" : null
   const withTipo = (f: string) => (tipoFilter ? `(${tipoFilter}) and (${f})` : f)
 
   const doc = documentoNumerico(texto)
   if (doc) {
-    const f = `contains(LicTradNum,'${doc}') or contains(CardCode,'${doc}')`
+    const f = `contains(FederalTaxID,'${doc}') or contains(CardCode,'${doc}')`
     return {
       path: `/BusinessPartners?${select}&$top=${top}&$filter=${withTipo(f)}`,
-      criterio: `NIT/cédula (LicTradNum) o CardCode contienen ${doc}`,
+      criterio: `NIT/cédula (campo FederalTaxID) o CardCode contienen ${doc}`,
     }
   }
 

@@ -602,7 +602,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             description:
               "Busca clientes, proveedores o artículos por nombre, código parcial o NIT/cédula. " +
               "Con varias palabras encuentra el nombre aunque estén en otro orden y sin distinguir mayúsculas " +
-              "(\"Juan Perez\" encuentra \"PEREZ GOMEZ JUAN\"). Texto numérico busca por NIT (LicTradNum) y CardCode. " +
+              "(\"Juan Perez\" encuentra \"PEREZ GOMEZ JUAN\"). Texto numérico busca por NIT y CardCode; en los resultados el NIT viene en el campo FederalTaxID. " +
               "Si no sabes si es cliente o proveedor, usa tipo='socio'. " +
               "Preferir sobre listar_registros cuando la intención es identificar una entidad por texto.",
             inputSchema: z.object({

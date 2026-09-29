@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest"
 import {
   classifyToolSteps,
   humanToolError,
-  areRelatedTools,
   getToolStepError,
   type ToolStepInput,
 } from "@/lib/chat/ui/tool-step-status"
@@ -38,13 +37,32 @@ describe("classifyToolSteps", () => {
     ).toEqual(["corregido", "ok", "ok"])
   })
 
-  it("error NO retryable nunca es corregido, aunque después funcione la misma tool", () => {
-    expect(statuses([fail("consultar_sql", "SAP_ERROR", false), ok("consultar_sql")], false)).toEqual(["fallido", "ok"])
+  it("regresión Flexo 29-sep (rid 5493f17a): 2× buscar_socio_o_item SAP_QUERY_ERROR → consultar_sql ok → compras_proveedor ok ⇒ corregidos", () => {
+    expect(
+      statuses(
+        [
+          fail("buscar_socio_o_item", "SAP_QUERY_ERROR", false, "5493f17a"),
+          fail("buscar_socio_o_item", "SAP_QUERY_ERROR", false, "5493f17a"),
+          ok("consultar_sql"),
+          ok("compras_proveedor"),
+        ],
+        false,
+      ),
+    ).toEqual(["corregido", "corregido", "ok", "ok"])
   })
 
-  it("CHAT_TIMEOUT / TURN_BUDGET_EXHAUSTED (retryable:false) → fallido aunque haya éxitos posteriores", () => {
-    expect(statuses([fail("consultar_sql", "CHAT_TIMEOUT", false), ok("consultar_sql")], false)).toEqual(["fallido", "ok"])
-    expect(statuses([fail("kpi_negocio", "TURN_BUDGET_EXHAUSTED", false)], true)).toEqual(["fallido"])
+  it("error NO retryable seguido de éxito de la misma tool → corregido (el asistente lo sorteó)", () => {
+    expect(statuses([fail("consultar_sql", "SAP_ERROR", false), ok("consultar_sql")], false)).toEqual(["corregido", "ok"])
+  })
+
+  it("CHAT_TIMEOUT (retryable:false) con un éxito posterior → corregido; sin éxito posterior → fallido", () => {
+    expect(statuses([fail("consultar_sql", "CHAT_TIMEOUT", false), ok("kpi_negocio")], false)).toEqual(["corregido", "ok"])
+    expect(statuses([ok("kpi_negocio"), fail("consultar_sql", "CHAT_TIMEOUT", false)], false)).toEqual(["ok", "fallido"])
+  })
+
+  it("SAP_WRITE_UNCERTAIN nunca es corregido: la escritura puede haber quedado en SAP", () => {
+    expect(statuses([fail("crear_documento", "SAP_WRITE_UNCERTAIN", false), ok("obtener_documento")], false)).toEqual(["fallido", "ok"])
+    expect(statuses([fail("crear_documento", "SAP_WRITE_UNCERTAIN", false)], true)).toEqual(["fallido"])
   })
 
   it("código desconocido: se clasifica igual que cualquier error (por retryable)", () => {
@@ -52,13 +70,19 @@ describe("classifyToolSteps", () => {
     expect(statuses([fail("consultar_sql", "CODIGO_NUEVO_X", true)], false)).toEqual(["fallido"])
   })
 
-  it("output-error sin dato de retryable seguido de éxito de tool NO relacionada → fallido", () => {
+  it("output-error sin dato de retryable seguido de éxito de otra tool → corregido", () => {
     const step: ToolStepInput = { toolName: "consultar_sql", state: "output-error", errorText: "Invalid input" }
-    expect(statuses([step, ok("kpi_negocio")], false)).toEqual(["fallido", "ok"])
+    expect(statuses([step, ok("kpi_negocio")], false)).toEqual(["corregido", "ok"])
   })
 
-  it("error NO retryable seguido de éxito de tool no relacionada → fallido", () => {
-    expect(statuses([fail("consultar_sql", "SAP_UNAVAILABLE", false), ok("kpi_negocio")], false)).toEqual(["fallido", "ok"])
+  it("error NO retryable seguido de éxito de tool no relacionada → corregido", () => {
+    expect(statuses([fail("consultar_sql", "SAP_UNAVAILABLE", false), ok("kpi_negocio")], false)).toEqual(["corregido", "ok"])
+  })
+
+  it("un éxito posterior solo corrige los fallos ANTERIORES a él", () => {
+    expect(
+      statuses([fail("a", "SAP_QUERY_ERROR", false), ok("b"), fail("c", "SAP_QUERY_ERROR", false)], false),
+    ).toEqual(["corregido", "ok", "fallido"])
   })
 
   it("error sin éxito posterior en un mensaje terminado → fallido", () => {
@@ -76,8 +100,18 @@ describe("classifyToolSteps", () => {
     expect(s.error?.code).toBe("SAP_COLUMN_NOT_FOUND")
   })
 
-  it("en streaming, error explícitamente NO retryable → fallido (no hay nada que esperar)", () => {
-    expect(statuses([fail("consultar_sql", "SAP_UNAVAILABLE", false)], true)).toEqual(["fallido"])
+  it("en streaming, error NO retryable sin éxito posterior → pendiente (el asistente aún puede sortearlo)", () => {
+    const [s] = classifyToolSteps([fail("consultar_sql", "SAP_UNAVAILABLE", false)], true)
+    expect(s.status).toBe("pendiente")
+    expect(s.retrying).toBe(true)
+    // …y al terminar el mensaje sin ningún éxito posterior queda fallido.
+    expect(statuses([fail("consultar_sql", "SAP_UNAVAILABLE", false)], false)).toEqual(["fallido"])
+  })
+
+  it("en streaming, un fallo con éxito posterior ya se muestra corregido (no cambia al terminar)", () => {
+    const steps = [fail("buscar_socio_o_item", "SAP_QUERY_ERROR", false), ok("consultar_sql")]
+    expect(statuses(steps, true)).toEqual(["corregido", "ok"])
+    expect(statuses(steps, false)).toEqual(["corregido", "ok"])
   })
 
   it("en streaming, tool corriendo → pendiente sin retrying", () => {
@@ -94,12 +128,6 @@ describe("classifyToolSteps", () => {
 })
 
 describe("helpers", () => {
-  it("areRelatedTools", () => {
-    expect(areRelatedTools("consultar_sql", "descubrir_esquema")).toBe(true)
-    expect(areRelatedTools("kpi_negocio", "kpi_negocio")).toBe(true)
-    expect(areRelatedTools("consultar_sql", "kpi_negocio")).toBe(false)
-  })
-
   it("getToolStepError lee output.error y errorText", () => {
     expect(getToolStepError(fail("x", "BAD_REQUEST", true))?.code).toBe("BAD_REQUEST")
     expect(getToolStepError({ toolName: "x", state: "output-error", errorText: "boom" })).toEqual({ message: "boom" })
