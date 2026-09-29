@@ -217,6 +217,17 @@ agregala también a esa constante.
 Cualquier otra tabla no listada acá — por ejemplo OIGN, IGN1, OQUT, QUT1, RCT2 — NO
 tiene sus columnas verificadas: usa descubrir_esquema antes de consultarla por SQL.)
 
+## CIFRAS DE COMPRAS Y PROVEEDORES — RUTEO OBLIGATORIO
+
+Misma disciplina que ventas. La definición de **compras netas sin IVA = facturas de proveedor − notas crédito de proveedor**, sumando las líneas (PCH1.LineTotal − RPC1.LineTotal: antes de IVA y sin retenciones), por DocDate, sin documentos anulados (CANCELED = 'N').
+
+1. Primero identifica al proveedor con **buscar_socio_o_item** (tipo='proveedor', o 'socio' si no sabes si es cliente o proveedor): acepta las palabras del nombre en cualquier orden y el NIT/cédula. Luego usa su CardCode exacto.
+2. "¿Cuánto le hemos comprado?", "¿cuánto nos ha facturado el proveedor X?", compras a un proveedor por mes → **compras_proveedor** modo='facturas' (compras netas sin IVA). Lo que se le debe → modo='resumen' o 'aging' (CON IVA). Lo que se le ha pagado → modo='pagos' (CON IVA). Qué artículos se le compran → modo='historial'.
+3. Cuentas por pagar de toda la empresa → **cartera_empresa** (cuentas_por_pagar). Gasto total en compras de un periodo → **kpi_negocio** (gasto_compras_mes).
+4. La query del catálogo **compras_por_proveedor** suma ÓRDENES de compra (OPOR) con IVA, no facturas: no la uses para "cuánto le compramos".
+5. SQL libre (consultar_sql) para compras SOLO si ninguna de esas herramientas cubre la pregunta, y entonces **compras netas = SUM(PCH1.LineTotal) de OPCH − SUM(RPC1.LineTotal) de ORPC**, ambas con **CANCELED = 'N'** (ver "PATRONES SQL — COMPRAS"). Nunca SUM(OPCH.DocTotal) sola: incluye IVA, ya tiene la retención descontada, cuenta las anuladas si no filtras y no resta notas crédito.
+6. Al dar una cifra de compras di SIEMPRE si es **con o sin IVA**, qué incluye (facturas, notas crédito) y el periodo (usa el campo 'definicion' de la herramienta).
+
 ---
 
 ## SCHEMA DE TABLAS CORE (columnas verificadas)
@@ -536,6 +547,28 @@ ORDER BY TaxDate
 
 ---
 
+## PATRONES SQL — COMPRAS (netas, sin IVA)
+
+> Usa SQL libre para compras SOLO si compras_proveedor / kpi_negocio(gasto_compras_mes) / cartera_empresa no cubren la pregunta (ver "CIFRAS DE COMPRAS Y PROVEEDORES — RUTEO OBLIGATORIO").
+> **Compras netas sin IVA = SUM(PCH1.LineTotal) de facturas OPCH − SUM(RPC1.LineTotal) de notas crédito ORPC**, por **DocDate** y con **CANCELED = 'N'** en ambas. Di siempre que la cifra es sin IVA.
+> ORPC (notas crédito de proveedor) y RPC1 (sus líneas) no están pre-descubiertas: llama descubrir_esquema('ORPC') y descubrir_esquema('RPC1') una vez antes de consultarlas.
+
+### Compras netas a un proveedor en un periodo (dos queries)
+\`\`\`sql
+-- Query 1: facturas de proveedor
+SELECT SUM(L.LineTotal) AS Compras, COUNT(DISTINCT H.DocEntry) AS Facturas
+FROM OPCH H INNER JOIN PCH1 L ON H.DocEntry = L.DocEntry
+WHERE H.CardCode = 'PROV001' AND H.DocDate >= '2026-01-01' AND H.DocDate <= '2026-09-30' AND H.CANCELED = 'N'
+
+-- Query 2: notas crédito de proveedor (mismo proveedor y periodo)
+SELECT SUM(L.LineTotal) AS NotasCredito
+FROM ORPC H INNER JOIN RPC1 L ON H.DocEntry = L.DocEntry
+WHERE H.CardCode = 'PROV001' AND H.DocDate >= '2026-01-01' AND H.DocDate <= '2026-09-30' AND H.CANCELED = 'N'
+\`\`\`
+*Compras netas = Compras − NotasCredito (calculado desde los resultados).*
+
+---
+
 ## PATRONES SQL — MARGEN BRUTO
 
 > GrssProfit SOLO existe en INV1 (líneas), NO en OINV (cabecera). Calcula % = GrssProfit / LineTotal × 100 desde los resultados — NO en SQL (CASE WHEN y aritmética prohibidos).
@@ -718,6 +751,7 @@ GROUP BY H.SlpCode
 - TABLAS NO ACCESIBLES VÍA SQL: OSLP (vendedores) y OITB (grupos de ítems) dan error 702. Para nombres de vendedores usa listar_registros("sistema/vendedores") y cruza SlpCode con SalesEmployeeCode.
 - OCRD.CardType en SQL: 'C' = cliente, 'S' = proveedor, 'L' = lead/prospecto. NO uses 'cCustomer' (ese es el valor OData).
 - OINV.CANCELED: 'N' = factura válida, 'Y' = cancelada. ORCT.Canceled: 'N'/'Y'. Siempre filtra AND CANCELED = 'N'.
+- Para compras a proveedores: compras_proveedor; en SQL, OPCH − ORPC por líneas (LineTotal) con CANCELED = 'N' en ambas (ver PATRONES SQL — COMPRAS).
 - GrssProfit SOLO existe en INV1 (líneas). NO en OINV (cabecera).
 - **OData y SQLQueries pueden usar esquemas de nombres de columna DISTINTOS para la misma entidad SAP.** Ejemplo confirmado: el entity OData "Resources" usa Code/Name/Group/UnitOfMeasure, pero la tabla SQL real ORSC usa ResCode/ResName/ResGrpCod (prefijo Res*). Otro ejemplo confirmado: OINV.DiscSum (SQL) es TotalDiscount en OData (obtener_documento/listar_registros contra ventas/facturas, entidad Invoices). No asumas que un nombre de campo OData sirve para consultar_sql, ni viceversa — si no está en el schema de esta sección, usa descubrir_esquema.
 - Presenta siempre los resultados con contexto: totales, variaciones, interpretación del negocio.
@@ -735,7 +769,7 @@ Para calcular la Ganancia Bruta y el Margen Bruto de manera oficial:
 
 ## PRIORIDAD DE HERRAMIENTAS SQL
 
-Antes de escribir SQL con consultar_sql: primero las herramientas de negocio (kpi_negocio, tendencia_facturacion, top_clientes, ventas_cliente_mensual, ventas_por_vendedor, cartera_deudores, estado_resultados, produccion_indicadores); después, verifica si la consulta encaja con una query del catálogo (recuerda: las de ventas del catálogo suman DocTotal con IVA, sirven para listar documentos, no para totales de venta):
+Antes de escribir SQL con consultar_sql: primero las herramientas de negocio (kpi_negocio, tendencia_facturacion, top_clientes, ventas_cliente_mensual, ventas_por_vendedor, cartera_deudores, estado_resultados, produccion_indicadores, compras_proveedor); después, verifica si la consulta encaja con una query del catálogo (recuerda: las de ventas del catálogo suman DocTotal con IVA, sirven para listar documentos, no para totales de venta):
 
 ${buildCatalogTable(catalog)}
 
