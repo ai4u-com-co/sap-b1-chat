@@ -101,7 +101,9 @@ describe("kpi_negocio", () => {
   })
 
   it("un error del backend pasa por classifySapError (timeout → SAP_TIMEOUT retryable)", async () => {
-    const get = vi.fn(async () => { throw new Error("timeout: SAP B1 no respondió en 75000ms") })
+    const get = vi.fn(async () => {
+      throw new BackendError("GET", "/kpis", 504, JSON.stringify({ code: "SAP_TIMEOUT", error: "SAP B1 no respondió a tiempo." }))
+    })
     const tools = createNegocioTools({ get: get as never, status: vi.fn(), today: () => "2026-09-29" })
     const out = await run(tools.kpi_negocio, { kpiId: "ventas_mes_actual" })
     expect(out).toEqual({ error: expect.objectContaining({ code: "SAP_TIMEOUT", retryable: true }) })

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import { BackendError } from "@ai4u/contracts"
 import { classifySapError } from "@/lib/chat/sap-errors"
+import { ChatStoppedWaitingError } from "@/lib/chat/with-timeout"
 
 const be = (status: number, body: object | string, requestId?: string, method = "POST", path = "/query") =>
   new BackendError(method, path, status, typeof body === "string" ? body : JSON.stringify(body), requestId)
@@ -90,13 +91,13 @@ describe("classifySapError con BackendError (contracts >= 0.5.0)", () => {
 })
 
 describe("classifySapError con errores locales (no BackendError)", () => {
-  it("el timeout propio de withSapTimeout → SAP_TIMEOUT", () => {
-    expect(classifySapError(new Error("timeout: SAP B1 no respondió en 75000ms")).error.code).toBe("SAP_TIMEOUT")
+  it("el corte propio del chat (ChatStoppedWaitingError) → CHAT_TIMEOUT no reintentable (el backend puede seguir trabajando)", () => {
+    expect(classifySapError(new ChatStoppedWaitingError(65_000)).error).toMatchObject({ code: "CHAT_TIMEOUT", retryable: false })
   })
 
-  it("'Timeout'/'TIMEOUT' en cualquier caso (antes distinguía mayúsculas y caía a SAP_ERROR)", () => {
-    expect(classifySapError(new Error("Request TIMEOUT")).error.code).toBe("SAP_TIMEOUT")
-    expect(classifySapError(new Error("This operation was aborted")).error.code).toBe("SAP_TIMEOUT")
+  it("'Timeout'/'aborted' local en cualquier caso → CHAT_TIMEOUT, no SAP_ERROR ni SAP_TIMEOUT reintentable", () => {
+    expect(classifySapError(new Error("Request TIMEOUT")).error).toMatchObject({ code: "CHAT_TIMEOUT", retryable: false })
+    expect(classifySapError(new Error("This operation was aborted")).error).toMatchObject({ code: "CHAT_TIMEOUT", retryable: false })
   })
 
   it("fetch failed → SAP_UNAVAILABLE", () => {
