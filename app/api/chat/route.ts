@@ -36,6 +36,8 @@ import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql
 import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
 import { withSapTimeout } from "@/lib/chat/with-timeout"
 import { createChatPersistence, type PersistDb } from "@/lib/chat/persistence"
+import { createNegocioTools } from "@/lib/chat/tools/negocio"
+import { TENANT_PROFILES } from "@/lib/chat/tenant-profiles"
 import { detectIntent } from "@/lib/chat/intent"
 
 export const maxDuration = 300
@@ -381,6 +383,17 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           },
         },
         tools: {
+          // Tools de negocio (kpi_negocio, top_clientes, …): mismos endpoints y
+          // misma definición de venta que Pulse/Finanzas de Mission Control. Van
+          // primero a propósito — son la fuente preferida para cifras de venta.
+          ...createNegocioTools({
+            get: <T,>(path: string) => withSapTimeout(client.get<T>(path)),
+            status: (toolCallId, text) => {
+              writer.write({ type: "data-tool-status", data: { toolCallId, text } } as never)
+            },
+            excludedDates: TENANT_PROFILES[tenantId]?.excludedDates,
+          }),
+
           descubrir_esquema: tool({
             description:
               "Busca la estructura de tablas del ERP: columnas, tipos de datos y descripciones. Úsalo SIEMPRE antes de formular o corregir cualquier consulta SQL para asegurar nombres de campos y tablas correctos.",
@@ -451,7 +464,9 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               "Disponibles: ventas_por_periodo, top_clientes_por_facturacion, ventas_por_vendedor, " +
               "facturas_vencidas, aging_clientes, cobros_del_periodo, compras_por_proveedor, " +
               "pedidos_retrasados, margen_por_articulo, stock_por_almacen, items_sin_movimiento, " +
-              "ops_abiertas, clientes_inactivos.",
+              "ops_abiertas, clientes_inactivos. " +
+              "OJO: ventas_por_periodo, top_clientes_por_facturacion y ventas_por_vendedor suman DocTotal (CON IVA), por DocDate y sin restar notas crédito — NO cuadran con Pulse. " +
+              "Para cifras de venta usa kpi_negocio / top_clientes / ventas_por_vendedor (tools); estas queries sirven para listar facturas individuales.",
             inputSchema: z.object({
               query: z.string().describe("Nombre exacto de la query del catálogo"),
               params: z.record(z.string(), z.unknown()).optional().describe("Parámetros de la query"),
@@ -706,7 +721,10 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           analisis_ventas: tool({
-            description: "Análisis de ventas: top clientes por revenue, top productos, totales del período.",
+            description:
+              "Análisis de PEDIDOS (órdenes de venta ORDR, por fecha del pedido, montos con y sin IVA): top clientes y top productos por valor PEDIDO, totales de pedidos del período. " +
+              "NO es facturación ni la venta de Pulse: para '¿cuánto vendimos/facturamos?' o top clientes por venta usa kpi_negocio / top_clientes. " +
+              "Úsala solo cuando pregunten explícitamente por pedidos u órdenes de venta, o por los productos más pedidos.",
             inputSchema: z.object({
               desde: z.string().optional(),
               hasta: z.string().optional(),
@@ -725,7 +743,9 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           }),
 
           tendencia_ventas: tool({
-            description: "Ventas mes a mes últimos 12 meses con variación MoM y YoY.",
+            description:
+              "Tendencia de PEDIDOS (órdenes de venta ORDR por fecha del pedido, sin IVA) mes a mes, últimos 12 meses con variación MoM y YoY. " +
+              "NO es facturación: para ventas/facturación mes a mes usa tendencia_facturacion (misma serie que Pulse). Úsala solo si preguntan por la tendencia de pedidos.",
             inputSchema: z.object({}),
             execute: async (_args: Record<string, never>, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Calculando tendencia de ventas 12 meses…" } } as never)
