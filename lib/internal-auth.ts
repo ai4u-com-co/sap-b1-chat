@@ -1,31 +1,33 @@
-import { timingSafeEqual, createHash } from "crypto"
+import { safeEqual } from "@ai4u/platform/security"
+import { readEnv, type EnvSource } from "@/lib/env"
 
 /**
  * Secreto interno compartido con mission-control-main. MISSION_CONTROL_SECRET
- * es el nombre canónico del ecosistema (usado por 22+ repos); MC_INTERNAL_SECRET
+ * es el nombre canónico del ecosistema (contrato de env v1); MC_INTERNAL_SECRET
  * es un alias legacy que se acepta mientras se retira de Vercel.
+ *
+ * Se aceptan AMBOS valores a la vez (comportamiento previo): readEnv del canónico
+ * (que ya cae al alias con aviso si el canónico falta) + el alias leído aparte, por
+ * si los dos están definidos con valores distintos durante una rotación.
  */
-function candidates(): string[] {
-  return [process.env.MISSION_CONTROL_SECRET, process.env.MC_INTERNAL_SECRET].filter(
-    (s): s is string => Boolean(s)
-  )
+export function candidates(env?: EnvSource): string[] {
+  const all = [readEnv("MISSION_CONTROL_SECRET", env), readEnv("MC_INTERNAL_SECRET", env)]
+  return [...new Set(all.filter((s): s is string => Boolean(s)))]
 }
 
-/** Compara en tiempo constante contra cualquiera de los secretos aceptados. */
-export function verifyInternalSecret(received: string | null | undefined): boolean {
+/** Compara en tiempo constante (safeEqual de @ai4u/platform) contra cualquiera de los secretos aceptados. */
+export function verifyInternalSecret(received: string | null | undefined, env?: EnvSource): boolean {
   if (!received) return false
   try {
-    const receivedHash = createHash("sha256").update(received).digest()
-    return candidates().some((expected) => {
-      const expectedHash = createHash("sha256").update(expected).digest()
-      return timingSafeEqual(receivedHash, expectedHash)
-    })
+    // `some` corta en el primer acierto: el tiempo solo revela CUÁL candidato
+    // coincidió (canónico o alias), nunca el contenido del secreto.
+    return candidates(env).some((expected) => safeEqual(received, expected))
   } catch {
     return false
   }
 }
 
 /** Secreto a mandar en llamadas salientes hacia mission-control-main (prefiere el nombre canónico). */
-export function getOutgoingInternalSecret(): string | undefined {
-  return candidates()[0]
+export function getOutgoingInternalSecret(env?: EnvSource): string | undefined {
+  return candidates(env)[0]
 }

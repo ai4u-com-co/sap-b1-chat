@@ -1,3 +1,5 @@
+import { readEnv } from "@/lib/env"
+
 export type BackendType = "sap" | "proxy"
 
 export interface TenantBackend {
@@ -7,7 +9,7 @@ export interface TenantBackend {
 
 export function getTenantBackend(tenantId: string): TenantBackend {
   if (tenantId === "magdalena") {
-    return { type: "proxy", proxyUrl: process.env.MAGDALENA_CHAT_URL }
+    return { type: "proxy", proxyUrl: readEnv("MAGDALENA_CHAT_URL") }
   }
   return { type: "sap" }
 }

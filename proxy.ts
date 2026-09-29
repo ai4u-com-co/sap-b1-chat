@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { verifySession } from "@ai4u/mc-sso"
+import { readEnv } from "@/lib/env"
 
 // mc-auth is the SSO handoff endpoint — always public
 const PUBLIC_PATHS = ["/api/mc-auth", "/_next", "/favicon"]
@@ -11,7 +12,7 @@ export function proxy(req: NextRequest) {
 
   if (PUBLIC_PATHS.some(p => pathname.startsWith(p))) return NextResponse.next()
 
-  const secret = process.env.MISSION_CONTROL_SECRET ?? ""
+  const secret = readEnv("MISSION_CONTROL_SECRET") ?? ""
 
   // In production, a missing secret is a misconfiguration — fail closed.
   if (!secret) {

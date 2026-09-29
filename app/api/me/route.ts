@@ -1,10 +1,6 @@
 import { withApiHandler } from "@ai4u/platform/http"
 import { getApiKey, getTenantId } from "@/app/lib/session"
-
-const BACKEND_URL =
-  process.env.BACKEND_URL ??
-  process.env.NEXT_PUBLIC_BACKEND_URL ??
-  "http://localhost:4100"
+import { getBackendUrl } from "@/lib/sap-gateway"
 
 export const GET = withApiHandler(async () => {
   const [apiKey, tenantId] = await Promise.all([getApiKey(), getTenantId()])
@@ -14,7 +10,7 @@ export const GET = withApiHandler(async () => {
   }
 
   try {
-    const res = await fetch(`${BACKEND_URL}/api/v1/me`, {
+    const res = await fetch(`${getBackendUrl()}/api/v1/me`, {
       headers: { "X-API-Key": apiKey },
       cache: "no-store",
     })

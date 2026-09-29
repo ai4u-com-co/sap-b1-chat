@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server"
 import { verifyMcToken, createSession } from "@ai4u/mc-sso"
 import { withApiHandler } from "@ai4u/platform/http"
 import { COOKIE } from "@/app/lib/session"
+import { readEnv } from "@/lib/env"
 
 const SERVICE_ID     = "sapb1chat"
 const SESSION_TTL_S  = 8 * 60 * 60
@@ -13,7 +14,7 @@ export const POST = withApiHandler(async (rawReq) => {
   const req = rawReq as NextRequest
   const form   = await req.formData()
   const token  = String(form.get("token") ?? "")
-  const secret = process.env.MISSION_CONTROL_SECRET
+  const secret = readEnv("MISSION_CONTROL_SECRET")
   if (!secret) {
     return NextResponse.json({ error: "Configuración de servidor incompleta" }, { status: 500 })
   }
