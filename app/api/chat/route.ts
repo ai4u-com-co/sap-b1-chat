@@ -1,5 +1,6 @@
 import { createAnthropic } from "@ai-sdk/anthropic"
 import { withApiHandler, type ApiContext } from "@ai4u/platform/http"
+import { flushLogs } from "@ai4u/platform/logger"
 import { supabase } from "@/lib/supabase"
 import {
   streamText, stepCountIs, pruneMessages,
@@ -290,6 +291,13 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
 
   const stream = createUIMessageStream({
     execute: async (ctx) => {
+      // withApiHandler sube los logs ANTES de devolver la respuesta, pero esta
+      // respuesta es un stream que se devuelve de inmediato: todo lo que se loguea
+      // mientras corre el turno (tool calls, persistencia, errores de Anthropic/SAP)
+      // quedaba en el buffer y se perdía al congelarse la función. Se sube acá, al
+      // terminar el turno. Hallado en la verificación en prod del 29-sep.
+      try {
+      await (async () => {
       writer = ctx.writer
       writer.write({ type: "data-status", data: { text: "Conectando a SAP B1…" } } as never)
       if (autoEscalated) {
@@ -331,7 +339,11 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
         model: anthropic(modelCap.apiSlug),
         messages: [...systemMessages, ...allMessages],
         stopWhen: stepCountIs(maxSteps),
-        onFinish: async ({ text, toolCalls, toolResults }) => {
+        onFinish: async ({ text, steps }) => {
+          // `toolCalls`/`toolResults` del evento son solo los del ÚLTIMO paso (que
+          // suele ser el de texto, sin tools): se toman de todos los pasos.
+          const toolCalls = steps.flatMap((st) => st.toolCalls)
+          const toolResults = steps.flatMap((st) => st.toolResults)
           // La sesión y el mensaje de usuario ya se persistieron antes del tool
           // loop — acá solo queda el mensaje final del asistente.
           await persistence.saveAssistant({ text, toolCalls, toolResults, modelId: selectedModel })
@@ -1330,6 +1342,10 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
       } catch (err) {
         console.error("Error enviando usage:", err)
       }
+      })()
+      } finally {
+        await flushLogs().catch(() => {})
+      }
     },
     // createUIMessageStreamResponse (abajo) retorna el Response de streaming de
     // forma síncrona, antes de que execute() termine — withApiHandler ya no
@@ -1338,6 +1354,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
     // por completo: nunca llega a platform_logs.
     onError: (error) => {
       apiCtx.log.error({ err: error, tenantId, sessionId }, "chat: error no controlado en execute()")
+      void flushLogs().catch(() => {})
       return "Ocurrió un error procesando tu consulta en SAP. Por favor intenta de nuevo."
     },
   })
