@@ -59,10 +59,11 @@ describe("resolveAnthropicKey", () => {
     expect(r.envName).toBe("ANTHROPIC_API_KEY")
   })
   it("source=none cuando no hay ninguna, indicando qué env var se esperaba", () => {
+    // Contrato de env v1: el id "lamagdalena" se normaliza al prefijo MAGDALENA.
     const r = resolveAnthropicKey("lamagdalena", {})
     expect(r.source).toBe("none")
     expect(r.key).toBe("")
-    expect(r.envName).toBe("LAMAGDALENA_ANTHROPIC_API_KEY")
+    expect(r.envName).toBe("MAGDALENA_ANTHROPIC_API_KEY")
     expect(r.fingerprint).toBe("(vacía)")
   })
 })

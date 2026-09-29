@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server"
 import { withApiHandler } from "@ai4u/platform/http"
+import { readEnv } from "@/lib/env"
 
-const CHANGELOG_URL = process.env.CHANGELOG_URL
+// CHANGELOG_URL acá es la URL COMPLETA del endpoint (…/api/changelog/<tenant>/<app>),
+// no la URL base del servicio: por eso se lee con su nombre propio y NO como alias
+// de NEXT_PUBLIC_CHANGELOG_URL (que en el contrato es la base que usa el pill).
 
 export const GET = withApiHandler(async (req: Request) => {
+  const CHANGELOG_URL = readEnv("CHANGELOG_URL")
   if (!CHANGELOG_URL) {
     return NextResponse.json({ error: "changelog not configured" }, { status: 503 })
   }

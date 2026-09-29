@@ -22,14 +22,20 @@
  * que sea testeable en aislamiento.
  */
 import { APICallError } from "@ai-sdk/provider"
+import { getProviderKey, normalizeTenant, type ProviderKeySource } from "@ai4u/config/env"
 
 // ── Key por tenant ────────────────────────────────────────────────
 
-export type AnthropicKeySource = "tenant" | "global" | "none"
+/**
+ * `tenant` = `{TENANT}_ANTHROPIC_API_KEY`, `ai4u` = `AI4U_ANTHROPIC_API_KEY` (llave
+ * propia de Ai4U, nivel nuevo del contrato de env v1), `global` = `ANTHROPIC_API_KEY`
+ * (o su alias legado `CLAUDE_API_KEY`; el contrato lo llama "legacy", acá se conserva
+ * "global" para no cambiar el valor de `keySource` en los logs), `none` = vacía.
+ */
+export type AnthropicKeySource = "tenant" | "ai4u" | "global" | "none"
 
 export type ResolvedAnthropicKey = {
   key: string
-  /** `tenant` = `{TENANT}_ANTHROPIC_API_KEY`, `global` = `ANTHROPIC_API_KEY`, `none` = vacía. */
   source: AnthropicKeySource
   /** Nombre de la env var de la que salió la key (o la que se buscó primero si no hay ninguna). */
   envName: string
@@ -49,22 +55,42 @@ export function keyFingerprint(key: string | undefined | null): string {
   return `${key.slice(0, 16)}…${key.slice(-4)}`
 }
 
+/** Nombre de la env var de Anthropic del tenant según el contrato (`flexo` → `FLEXOIMPRESOS_…`). */
 export function tenantKeyEnvName(tenantId: string): string {
-  return `${tenantId.toUpperCase()}_ANTHROPIC_API_KEY`
+  try {
+    return `${normalizeTenant(tenantId)}_ANTHROPIC_API_KEY`
+  } catch {
+    // id vacío/inválido: nombre legible para el mensaje al operador (nunca se lee).
+    return `${tenantId.toUpperCase()}_ANTHROPIC_API_KEY`
+  }
 }
 
+const SOURCE_FOR_LOGS: Record<ProviderKeySource, AnthropicKeySource> = {
+  tenant: "tenant",
+  ai4u: "ai4u",
+  legacy: "global",
+}
+
+/**
+ * Resuelve la key de Anthropic con `getProviderKey` de @ai4u/config (contrato de env v1):
+ *   {TENANT}_ANTHROPIC_API_KEY → AI4U_ANTHROPIC_API_KEY → ANTHROPIC_API_KEY / CLAUDE_API_KEY.
+ * El orden entre las variables que ya existían (tenant antes que la global) es el mismo
+ * de antes; el contrato agrega el nivel AI4U_ en el medio (hoy no está definido en Vercel).
+ */
 export function resolveAnthropicKey(
   tenantId: string,
   env: Record<string, string | undefined> = process.env,
 ): ResolvedAnthropicKey {
   const tenantEnv = tenantKeyEnvName(tenantId)
-  const tenantKey = env[tenantEnv]
-  if (tenantKey) {
-    return { key: tenantKey, source: "tenant", envName: tenantEnv, fingerprint: keyFingerprint(tenantKey) }
+  let hit: ReturnType<typeof getProviderKey>
+  try {
+    hit = getProviderKey("ANTHROPIC", tenantId, env)
+  } catch {
+    // id de tenant inválido: sin nivel tenant, igual se prueban AI4U_ y la global.
+    hit = getProviderKey("ANTHROPIC", null, env)
   }
-  const globalKey = env.ANTHROPIC_API_KEY
-  if (globalKey) {
-    return { key: globalKey, source: "global", envName: "ANTHROPIC_API_KEY", fingerprint: keyFingerprint(globalKey) }
+  if (hit) {
+    return { key: hit.key, source: SOURCE_FOR_LOGS[hit.source], envName: hit.envName, fingerprint: keyFingerprint(hit.key) }
   }
   return { key: "", source: "none", envName: tenantEnv, fingerprint: "(vacía)" }
 }
