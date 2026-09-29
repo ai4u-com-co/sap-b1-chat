@@ -1,11 +1,15 @@
 /**
  * Clasificación de los pasos de tool de UN mensaje del asistente para la UI.
  *
- * Problema que resuelve: cuando una tool devuelve un error recuperable que el
- * modelo corrige solo (703 → reescribe el SQL, SAP_TIMEOUT → reintenta y
- * funciona, SCHEMA_NOT_DISCOVERED → descubrir_esquema y vuelve a consultar),
- * pintar cada intento fallido como error hace sentir al usuario que el chat
- * "tira muchos errores" aunque la respuesta final salga bien.
+ * Problema que resuelve: cuando una tool falla y el modelo lo resuelve solo
+ * (703 → reescribe el SQL, SAP_TIMEOUT → reintenta, o resuelve por otra vía:
+ * buscar_socio_o_item falla → consultar_sql + compras_proveedor), pintar cada
+ * intento fallido como error hace sentir al usuario que el chat "tira muchos
+ * errores" aunque la respuesta final salga bien.
+ *
+ * Evidencia (Flexo 29-sep-2026, rid 5493f17a): 2× buscar_socio_o_item con
+ * SAP_QUERY_ERROR (retryable:false) → consultar_sql ok → compras_proveedor ok y
+ * respuesta final correcta; los 2 fallos quedaban en naranja como "fallido".
  *
  * Función pura (sin React) para poder testearla sin DOM.
  */
@@ -29,13 +33,13 @@ export type ToolStepError = {
 
 /**
  * - `ok`: terminó bien.
- * - `pendiente`: sigue corriendo, o falló con un error recuperable mientras la
- *   respuesta aún está en streaming (el modelo todavía puede corregirlo).
- * - `corregido`: error con `retryable: true` y más adelante en el mismo mensaje
- *   hubo un éxito. Un error sin dato de `retryable` (output-error: excepción o
- *   input inválido) solo cuenta si el éxito posterior es de la misma tool o de
- *   una relacionada. `retryable: false` nunca es corregido.
- * - `fallido`: falló y no hubo éxito posterior (o el error no es recuperable).
+ * - `pendiente`: sigue corriendo, o falló sin éxito posterior mientras la
+ *   respuesta aún está en streaming (el modelo todavía puede sortearlo).
+ * - `corregido`: falló pero DESPUÉS, en el mismo mensaje, hubo al menos un paso
+ *   exitoso de cualquier tool: el asistente lo sorteó (reintento, otra consulta u
+ *   otra tool). Da igual el `retryable` del error. Excepción: SAP_WRITE_UNCERTAIN.
+ * - `fallido`: falló y no hubo ningún éxito posterior en el mensaje (ya
+ *   terminado), o es SAP_WRITE_UNCERTAIN.
  */
 export type ToolStepStatus = "ok" | "pendiente" | "corregido" | "fallido"
 
@@ -43,30 +47,8 @@ export type ClassifiedToolStep = {
   status: ToolStepStatus
   /** Error del paso (output.error o errorText de output-error), si lo hubo. */
   error?: ToolStepError
-  /** true si está `pendiente` por un error recuperable (UI: "reintentando…"). */
+  /** true si está `pendiente` por un error que el modelo todavía puede sortear (UI: "reintentando…"). */
   retrying: boolean
-}
-
-/**
- * Tools que se corrigen entre sí (solo aplica a errores sin dato de `retryable`): un error en una se resuelve con otra del
- * mismo grupo (p.ej. 702 "tabla no accesible por SQL" → listar_registros;
- * SCHEMA_NOT_DISCOVERED → descubrir_esquema y de nuevo consultar_sql).
- * Una tool fuera de estos grupos solo se considera corregida por sí misma.
- */
-const RELATED_GROUPS: ReadonlyArray<ReadonlySet<string>> = [
-  new Set([
-    "descubrir_esquema",
-    "consultar_sql",
-    "ejecutar_query_catalogo",
-    "listar_queries_catalogo",
-    "listar_registros",
-    "obtener_documento",
-  ]),
-]
-
-export function areRelatedTools(a: string, b: string): boolean {
-  if (a === b) return true
-  return RELATED_GROUPS.some((g) => g.has(a) && g.has(b))
 }
 
 /** Extrae el error de un paso: `{ error }` en el output, o el `errorText` de output-error. */
@@ -90,13 +72,11 @@ function isSuccess(step: ToolStepInput): boolean {
 }
 
 /**
- * Recuperable = el modelo puede corregirlo. `retryable: false` explícito
- * (SAP_UNAVAILABLE, SAP_AUTH, SAP_WRITE_UNCERTAIN…) no lo es; sin dato
- * (p.ej. output-error por input inválido) se trata como recuperable.
+ * Errores que nunca se ocultan como "corregido", aunque después algo funcione:
+ * SAP_WRITE_UNCERTAIN = una escritura que SAP pudo haber registrado o no; el
+ * usuario tiene que verla para revisarlo en SAP antes de repetirla.
  */
-function isRecoverable(error: ToolStepError): boolean {
-  return error.retryable !== false
-}
+const NEVER_CORRECTED = new Set(["SAP_WRITE_UNCERTAIN"])
 
 /**
  * Clasifica los pasos de tool de un mensaje del asistente, en orden.
@@ -110,17 +90,15 @@ export function classifyToolSteps(steps: ToolStepInput[], streaming: boolean): C
     const error = getToolStepError(step)
     if (!error) return { status: "ok", retrying: false }
 
-    // `retryable: false` explícito (SAP_UNAVAILABLE, CHAT_TIMEOUT, TURN_BUDGET_EXHAUSTED…)
-    // nunca cuenta como corregido: aunque haya un éxito después, el usuario debe
-    // ver que ese paso no se completó (la respuesta puede estar incompleta).
-    const later = steps.slice(i + 1)
-    const corrected =
-      error.retryable === true
-        ? later.some(isSuccess)
-        : error.retryable === undefined && later.some((s) => isSuccess(s) && areRelatedTools(step.toolName, s.toolName))
-    if (corrected) return { status: "corregido", error, retrying: false }
+    if (NEVER_CORRECTED.has(error.code ?? "")) return { status: "fallido", error, retrying: false }
 
-    if (streaming && isRecoverable(error)) return { status: "pendiente", error, retrying: true }
+    // Cualquier éxito posterior (de cualquier tool) significa que el asistente
+    // sorteó este fallo. Los pasos solo se agregan al final, así que esto no
+    // cambia al terminar el streaming.
+    if (steps.slice(i + 1).some(isSuccess)) return { status: "corregido", error, retrying: false }
+
+    // Sin éxito posterior todavía: mientras el mensaje se genera, neutro.
+    if (streaming) return { status: "pendiente", error, retrying: true }
     return { status: "fallido", error, retrying: false }
   })
 }

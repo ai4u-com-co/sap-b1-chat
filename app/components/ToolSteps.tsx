@@ -122,7 +122,7 @@ function ToolCallStep({
 // ─── ToolSteps: lista de pasos de un mensaje ─────────────────────────────────
 /**
  * Renderiza los pasos de tool de un mensaje. Los pasos `corregido` (errores que
- * el modelo resolvió solo) se agrupan en un bloque neutro y plegado en la
+ * el modelo sorteó solo: reintento, otra consulta u otra tool) se agrupan en un bloque neutro y plegado en la
  * posición del primero; solo `fallido` se pinta como error.
  */
 export function ToolSteps({
@@ -188,12 +188,12 @@ export function ToolSteps({
                 aria-controls={groupId}
               >
                 <span aria-hidden style={{ color: "var(--ai4u-cadet-gray)" }}>↻</span>
-                <span style={ts.label}>Ajustó la consulta {n} {n === 1 ? "vez" : "veces"}</span>
+                <span style={ts.label}>Resolvió {n} {n === 1 ? "paso" : "pasos"} por otra vía</span>
                 <span aria-hidden style={ts.meta}>{groupOpen ? "▲" : "▼"}</span>
               </button>
               {groupOpen && (
                 <div id={groupId} style={ts.groupBody}>
-                  <p style={ts.groupHint}>El asistente corrigió estos pasos por su cuenta; no afectan la respuesta.</p>
+                  <p style={ts.groupHint}>El asistente resolvió estos pasos por su cuenta; no afectan la respuesta.</p>
                   {corrected.map(renderStep)}
                 </div>
               )}

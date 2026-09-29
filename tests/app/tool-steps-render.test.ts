@@ -20,7 +20,7 @@ describe("ToolSteps (render)", () => {
       ],
       false,
     )
-    expect(html).toContain("Ajustó la consulta 2 veces")
+    expect(html).toContain("Resolvió 2 pasos por otra vía")
     expect(html).toContain('aria-expanded="false"')
     expect(html).not.toContain('data-step-status="fallido"')
     expect(html).not.toContain("var(--ai4u-error)")
@@ -53,5 +53,22 @@ describe("ToolSteps (render)", () => {
     const html = render([part("consultar_sql", "a", err), part("consultar_sql", "b", err)], false)
     expect(html.match(/data-step-status="fallido"/g)).toHaveLength(2)
     expect(html.match(/Reintentar/g)).toHaveLength(1)
+  })
+
+  it("regresión Flexo 29-sep: fallos de buscar_socio_o_item sorteados con otras tools → plegados, sin naranja", () => {
+    const err = { error: { code: "SAP_QUERY_ERROR", message: "Property 'LicTradNum' of 'BusinessPartner' is invalid", retryable: false, requestId: "5493f17a" } }
+    const html = render(
+      [
+        part("buscar_socio_o_item", "a", err),
+        part("buscar_socio_o_item", "b", err),
+        part("consultar_sql", "c", { rows: [{ CardCode: "P8026979" }], count: 1 }),
+        part("compras_proveedor", "d", { total: 1 }),
+      ],
+      false,
+    )
+    expect(html).toContain("Resolvió 2 pasos por otra vía")
+    expect(html).not.toContain('data-step-status="fallido"')
+    expect(html).not.toContain("hot-orange")
+    expect(html).not.toContain("Reintentar")
   })
 })
