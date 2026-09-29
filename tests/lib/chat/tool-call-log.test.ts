@@ -88,6 +88,7 @@ describe("logToolCallResult", () => {
     success: true,
     input: {},
     output: {},
+    request_id: "rid-1",
   }
 
   it("inserta en la tabla chat_tool_calls con la fila tal cual", async () => {

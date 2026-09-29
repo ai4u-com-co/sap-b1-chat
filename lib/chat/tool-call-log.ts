@@ -23,6 +23,8 @@ export interface ToolCallLogRow {
   success: boolean
   input: unknown
   output: unknown
+  /** x-request-id del turno: une la fila con platform_logs (chat y backend). */
+  request_id: string | null
 }
 
 // Límite generoso para no guardar payloads gigantes (ej. un `consultar_sql` con
@@ -70,8 +72,9 @@ export function buildToolCallLogRow(args: {
   output?: unknown
   /** event.error cuando sdkSuccess=false */
   error?: unknown
+  requestId?: string
 }): ToolCallLogRow {
-  const { sessionId, tenantId, toolName, toolCallId, stepNumber, durationMs, input, sdkSuccess, output, error } = args
+  const { sessionId, tenantId, toolName, toolCallId, stepNumber, durationMs, input, sdkSuccess, output, error, requestId } = args
   const effectiveOutput = sdkSuccess
     ? output
     : { thrown: error instanceof Error ? error.message : String(error) }
@@ -86,6 +89,7 @@ export function buildToolCallLogRow(args: {
     success: sdkSuccess && !looksLikeToolError(effectiveOutput),
     input: truncateForStorage(input),
     output: truncateForStorage(effectiveOutput),
+    request_id: requestId ?? null,
   }
 }
 

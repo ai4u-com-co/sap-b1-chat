@@ -24,6 +24,7 @@ function resolveAuth(req: Request): { tenantId: string; sapApiKey: string; userI
   return null
 }
 import { BackendClient } from "@ai4u/contracts"
+import { classifySapError, type SapError } from "@/lib/chat/sap-errors"
 import { ENTITY_MAP } from "@ai4u/contracts"
 import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type CatalogEntry } from "@/lib/chat/system-prompt"
 import { fetchSapContext } from "@/lib/chat/sap-context"
@@ -32,7 +33,6 @@ import { fetchDocumentoConFallback } from "@/lib/chat/obtener-documento"
 import { fetchListarRegistrosConFallback } from "@/lib/chat/listar-registros"
 import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
 import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
-import { classifyColumnNotFound } from "@/lib/chat/sql-error-hints"
 import { withSapTimeout } from "@/lib/chat/with-timeout"
 import { createChatPersistence, type PersistDb } from "@/lib/chat/persistence"
 
@@ -71,31 +71,7 @@ async function proxyToBackend(url: string, messages: unknown[], model?: string):
 }
 
 // ── Error classifier ────────────────────────────────────────────
-type SapError = { code: string; message: string; retryable: boolean }
-
-function classifySapError(err: unknown): { error: SapError } {
-  const msg = err instanceof Error ? err.message : String(err)
-  // Primero y por patrón específico ("Column 'X' from table 'T' not exist"): los
-  // `includes("401")`/`includes("404")` de abajo pueden dar falsos positivos con
-  // dígitos que aparezcan en el texto del error de SAP.
-  const columnError = classifyColumnNotFound(msg)
-  if (columnError) return { error: columnError }
-  if (msg.includes("timeout"))
-    return { error: { code: "SAP_TIMEOUT", message: "SAP B1 no respondió en el tiempo esperado.", retryable: true } }
-  if (msg.includes("401") || msg.toLowerCase().includes("login"))
-    return { error: { code: "SAP_AUTH", message: "Sesión SAP expirada. Contacta al administrador.", retryable: false } }
-  if (msg.includes("404"))
-    return { error: { code: "SAP_NOT_FOUND", message: msg, retryable: false } }
-  if (msg.includes("702"))
-    return {
-      error: {
-        code: "SAP_TABLE_NOT_ACCESSIBLE",
-        message: "Esta tabla no es accesible vía SQL en este conector (ej. OITB, OSLP). Usa el endpoint OData equivalente en vez de consultar_sql.",
-        retryable: true,
-      },
-    }
-  return { error: { code: "SAP_ERROR", message: msg, retryable: false } }
-}
+// Clasificación de errores de SAP/backend: lib/chat/sap-errors.ts (testeada).
 
 // ── Validación estática de las 10 reglas SQL restrictivas del conector ──────
 // No es un parser SQL completo — son heurísticas por regex sobre los patrones
@@ -227,7 +203,9 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
     return Response.json({ error: "Formato de mensajes inválido." }, { status: 400 })
   }
 
-  const client = new BackendClient(tenantId, apiKey)
+  // x-request-id = requestId de este request del chat: une el log del chat, el del
+  // backend (su middleware lo reusa) y chat_tool_calls. x-consumer atribuye el tráfico.
+  const client = new BackendClient(tenantId, apiKey, { requestId: apiCtx.requestId, consumer: "sap-b1-chat" })
 
   // Model selection
   const lastUserMsg = [...modelMessages].reverse().find((m) => m.role === "user")
@@ -254,6 +232,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
     tenantId,
     userId,
     threadId: sessionId,
+    requestId: apiCtx.requestId,
   })
   await persistence.start({ userText })
 
