@@ -38,6 +38,7 @@ import { withSapTimeout } from "@/lib/chat/with-timeout"
 import { createChatPersistence, type PersistDb } from "@/lib/chat/persistence"
 import { createNegocioTools } from "@/lib/chat/tools/negocio"
 import { TENANT_PROFILES } from "@/lib/chat/tenant-profiles"
+import { detectIntent } from "@/lib/chat/intent"
 
 export const maxDuration = 300
 
@@ -166,17 +167,6 @@ function validateSqlConnectorRules(rawSql: string): SapError | null {
   return null
 }
 
-// ── Keywords para selección de modelo ────────────────────────────
-const complexReportKeywords = [
-  "reporte","informe","kpi","comparar","facturacion","facturado",
-  "mensual","semanal","semana","trimestre","evolucion","crecimiento",
-  "ventas","compras","contabilidad","asiento","grafico","dashboard",
-  "top","sql","query","analizar","analisis","consolidado","balance",
-  "hacer","crear","actualizar","modificar",
-  "margen","rentabilidad","porcentaje","ticket","conversion",
-  "vencido","cartera","cobros","pareto","historial",
-]
-
 // ── Handler principal ────────────────────────────────────────────
 export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const internal = resolveAuth(req)
@@ -211,15 +201,17 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const client = new BackendClient(tenantId, apiKey, { requestId: apiCtx.requestId, consumer: "sap-b1-chat" })
 
   // Model selection
-  const lastUserMsg = [...modelMessages].reverse().find((m) => m.role === "user")
-  const userContent = lastUserMsg?.content
-  const userText = typeof userContent === "string"
-    ? userContent
-    : Array.isArray(userContent)
-      ? userContent.filter((p) => p.type === "text").map((p) => (p as { type: "text"; text: string }).text).join(" ")
-      : ""
-  const userTextNorm = userText.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
-  const isComplexQuery = complexReportKeywords.some((kw) => userTextNorm.includes(kw))
+  const textOf = (m: ModelMessage): string =>
+    typeof m.content === "string"
+      ? m.content
+      : Array.isArray(m.content)
+        ? m.content.filter((p) => p.type === "text").map((p) => (p as { type: "text"; text: string }).text).join(" ")
+        : ""
+  const userTexts = modelMessages.filter((m) => m.role === "user").map(textOf)
+  const userText = userTexts.at(-1) ?? ""
+  // Intención del hilo reciente (no solo del último mensaje): ver lib/chat/intent.ts.
+  const intent = detectIntent(userTexts)
+  const isComplexQuery = intent.needsPrecision
 
   // ── Persistencia temprana de sesión + mensaje de usuario ─────────
   // Se hace ANTES del tool loop por dos razones:
@@ -244,16 +236,20 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const requestedModel = typeof body.model === "string" ? body.model : ""
   const requestedEffort = typeof body.effort === "string" ? body.effort : undefined
 
-  // Auto-routing por complejidad: si la consulta matchea keywords de reporte/KPI
-  // y el modelo resuelto es el más económico (Haiku, sin razonamiento), escala a
-  // Sonnet 5. NUNCA degrada una elección ya en Sonnet/Opus — solo sube desde el
-  // piso. Antes, isComplexQuery solo ampliaba maxSteps y dejaba el modelo intacto.
+  // Auto-routing por intención: si el hilo pide cifras del negocio, análisis o
+  // escrituras en SAP y el modelo resuelto es el más económico (Haiku), escala a
+  // Sonnet 5, que respeta mejor las reglas del prompt (IVA, canceladas, dialecto SQL).
+  // NUNCA degrada una elección ya en Sonnet/Opus: solo sube desde el piso.
   const baseModel = getModel(requestedModel)
   const autoEscalated = isComplexQuery && baseModel.id === DEFAULT_MODEL_ID
   const effectiveModel = autoEscalated ? "claude-sonnet-5" : requestedModel
   const { model: modelCap, effort, thinking } = resolveModelConfig(effectiveModel, requestedEffort)
   const selectedModel = modelCap.id
   const maxSteps = isComplexQuery ? 20 : 12
+  apiCtx.log.info(
+    { tenantId, requestedModel: baseModel.id, selectedModel, autoEscalated, intent: intent.kinds, intentMatches: intent.matches },
+    "chat: routing de modelo",
+  )
 
   // Message pruning (no sessions — historial viene del cliente)
   const pruned = pruneMessages({
