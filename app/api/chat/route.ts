@@ -37,6 +37,7 @@ import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } 
 import { withSapTimeout } from "@/lib/chat/with-timeout"
 import { createChatPersistence, type PersistDb } from "@/lib/chat/persistence"
 import { createNegocioTools } from "@/lib/chat/tools/negocio"
+import { buildBusquedaPath, sanitizeTexto, type TipoBusqueda } from "@/lib/chat/busqueda-socios"
 import { TENANT_PROFILES } from "@/lib/chat/tenant-profiles"
 import { detectIntent } from "@/lib/chat/intent"
 
@@ -466,7 +467,8 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               "pedidos_retrasados, margen_por_articulo, stock_por_almacen, items_sin_movimiento, " +
               "ops_abiertas, clientes_inactivos. " +
               "OJO: ventas_por_periodo, top_clientes_por_facturacion y ventas_por_vendedor suman DocTotal (CON IVA), por DocDate y sin restar notas crédito — NO cuadran con Pulse. " +
-              "Para cifras de venta usa kpi_negocio / top_clientes / ventas_por_vendedor (tools); estas queries sirven para listar facturas individuales.",
+              "Para cifras de venta usa kpi_negocio / top_clientes / ventas_por_vendedor (tools); estas queries sirven para listar facturas individuales. " +
+              "compras_por_proveedor suma ÓRDENES de compra (OPOR, DocTotal CON IVA), no facturas: para cuánto se le compró a un proveedor usa compras_proveedor.",
             inputSchema: z.object({
               query: z.string().describe("Nombre exacto de la query del catálogo"),
               params: z.record(z.string(), z.unknown()).optional().describe("Parámetros de la query"),
@@ -593,28 +595,34 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
 
           buscar_socio_o_item: tool({
             description:
-              "Busca clientes, proveedores o artículos por nombre o código parcial. " +
+              "Busca clientes, proveedores o artículos por nombre, código parcial o NIT/cédula. " +
+              "Con varias palabras encuentra el nombre aunque estén en otro orden y sin distinguir mayúsculas " +
+              "(\"Juan Perez\" encuentra \"PEREZ GOMEZ JUAN\"). Texto numérico busca por NIT (LicTradNum) y CardCode. " +
+              "Si no sabes si es cliente o proveedor, usa tipo='socio'. " +
               "Preferir sobre listar_registros cuando la intención es identificar una entidad por texto.",
             inputSchema: z.object({
-              tipo: z.enum(["cliente", "proveedor", "item"]).describe("Tipo de entidad"),
-              texto: z.string().describe("Texto parcial a buscar"),
+              tipo: z.enum(["cliente", "proveedor", "socio", "item"]).describe("cliente, proveedor, socio (cualquiera de los dos) o item"),
+              texto: z.string().describe("Nombre (palabras en cualquier orden), código parcial o NIT/cédula"),
               top: z.number().optional().describe("Máximo resultados (default 10)"),
             }),
-            execute: async ({ tipo, texto, top }: { tipo: "cliente" | "proveedor" | "item"; texto: string; top?: number }, { toolCallId }) => {
+            execute: async ({ tipo, texto, top }: { tipo: TipoBusqueda; texto: string; top?: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Buscando ${tipo}…` } } as never)
               const limit = Math.min(top ?? 10, 50)
-              const safeTexto = texto.replace(/[\x00-\x1f\x7f]/g, "").slice(0, 100)
-              const escaped = safeTexto.replace(/'/g, "''")
+              if (!sanitizeTexto(texto)) {
+                return { error: { code: "INVALID_INPUT", message: "Envía un nombre, código o NIT para buscar.", retryable: true } }
+              }
               try {
-                if (tipo === "item") {
-                  const path = `/Items?$select=ItemCode,ItemName,AvgStdPrice,QuantityOnStock&$top=${limit}&$filter=contains(ItemCode,'${escaped}') or contains(ItemName,'${escaped}')`
-                  const res = await withSapTimeout(client.odata<{ value?: unknown[] }>(path))
-                  return { resultados: res.value ?? [], count: (res.value ?? []).length }
-                }
-                const cardFilter = tipo === "cliente" ? "CardType eq 'cCustomer'" : "CardType eq 'cSupplier'"
-                const path = `/BusinessPartners?$select=CardCode,CardName,Phone1,EmailAddress,CurrentAccountBalance&$top=${limit}&$filter=(${cardFilter}) and (contains(CardCode,'${escaped}') or contains(CardName,'${escaped}'))`
+                const { path, criterio } = buildBusquedaPath(tipo, texto, limit)
                 const res = await withSapTimeout(client.odata<{ value?: unknown[] }>(path))
-                return { resultados: res.value ?? [], count: (res.value ?? []).length }
+                const resultados = res.value ?? []
+                return {
+                  resultados,
+                  count: resultados.length,
+                  criterio,
+                  ...(resultados.length === 0
+                    ? { sugerencia: "Sin resultados. Prueba con menos palabras (solo un apellido), con el NIT/cédula, o con tipo='socio' si no es seguro que sea cliente o proveedor." }
+                    : {}),
+                }
               } catch (err) {
                 return classifySapError(err)
               }

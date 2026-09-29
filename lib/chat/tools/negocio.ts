@@ -156,6 +156,80 @@ function trimPuc(nodos: EstadoNodo[], depth = 0): EstadoNodo[] {
   }))
 }
 
+// ── Compras a proveedores ────────────────────────────────────────────────────
+// Endpoints REALES de sap-b1-backend (origin/master): suppliers/[cardCode]/{summary,
+// aging,history,payments} (lib/capabilities/supplier.ts) y purchasing/invoices
+// (lib/capabilities/purchases.ts). Son los mismos que consume Mission Control
+// (app/api/finance/supplier/[cardCode] y lib/finance/sap.ts).
+
+export const DEFINICION_COMPRAS: Record<ModoCompras, string> = {
+  facturas:
+    "Compras netas sin IVA = facturas de proveedor − notas crédito de proveedor, sumando el subtotal de las líneas (LineTotal: antes de IVA y sin retenciones), por fecha de contabilización (DocDate), sin documentos anulados. " +
+    "Mismo criterio que el indicador 'Gasto en compras' de Pulse, que suma solo facturas (no resta notas crédito).",
+  resumen:
+    "Saldo por pagar al proveedor CON IVA (facturas abiertas: total − lo ya pagado, sin anuladas), saldo vencido, órdenes de compra abiertas y la última orden de compra (su total es CON IVA).",
+  historial:
+    "Artículos más comprados al proveedor en los últimos N meses (facturas de proveedor por DocDate, sin anuladas): el total por artículo es sin IVA (LineTotal). " +
+    "El 'totalAmount' general es total de facturas − IVA: queda por debajo del neto si hubo retenciones y NO resta notas crédito — para el total comprado usa modo='facturas'.",
+  pagos:
+    "Pagos hechos al proveedor (pagos efectuados), CON IVA: dinero realmente desembolsado. totalPaid suma efectivo + transferencias de los pagos no anulados (no incluye cheques ni tarjeta). La lista trae los últimos pagos, incluidos los anulados (cancelled=true).",
+  aging:
+    "Antigüedad de lo que se le debe al proveedor, CON IVA: saldo pendiente (total − pagado) de sus facturas abiertas sin anular, por tramos de días de vencimiento, con el detalle por factura.",
+}
+
+export type ModoCompras = "resumen" | "historial" | "pagos" | "aging" | "facturas"
+
+type PurchaseInvoiceRow = { docNum: number; docDate: string; cardCode: string; cardName?: string; neto: number }
+type CreditNoteRow = { DocEntry?: number; DocNum?: number; DocDate?: string; Cancelled?: string; DocumentLines?: { LineTotal?: number }[] }
+
+const MAX_MESES_FACTURAS = 24
+/** Tope de filas de purchasing/invoices (lib/capabilities/purchases.ts: sapQuery(..., 5000)). */
+const TOPE_FACTURAS_BACKEND = 5000
+/** Tope de $top del handler OData genérico del gateway (lib/sap/handler.ts). */
+const TOPE_NOTAS_CREDITO = 500
+const CONCURRENCIA_MESES = 3
+
+/** "20260105" | "2026-01-05" | "2026-01-05T00:00:00Z" → "2026-01-05". */
+export function normDate(d: unknown): string {
+  const digits = String(d ?? "").replace(/\D/g, "").slice(0, 8)
+  return digits.length === 8 ? `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}` : ""
+}
+
+function lastDayOfMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate()
+}
+
+/**
+ * Meses calendario completos que cubren [desde, hasta], con el MISMO formato de
+ * rango que usa Mission Control (lib/finance/sap.ts): YYYY-MM-01 → último día.
+ * Así la clave de caché del backend (`${tenant}:purchasing-invoices:${from}:${to}`)
+ * coincide con la de Finanzas y un mes ya consultado por MC sale de caché.
+ */
+export function mesesCalendario(desde: string, hasta: string): { from: string; to: string }[] {
+  const out: { from: string; to: string }[] = []
+  let y = Number(desde.slice(0, 4))
+  let m = Number(desde.slice(5, 7))
+  const yEnd = Number(hasta.slice(0, 4))
+  const mEnd = Number(hasta.slice(5, 7))
+  while (y < yEnd || (y === yEnd && m <= mEnd)) {
+    const mm = String(m).padStart(2, "0")
+    out.push({ from: `${y}-${mm}-01`, to: `${y}-${mm}-${String(lastDayOfMonth(y, m)).padStart(2, "0")}` })
+    m++
+    if (m > 12) { m = 1; y++ }
+  }
+  return out
+}
+
+async function inBatches<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = []
+  for (let i = 0; i < items.length; i += size) {
+    out.push(...(await Promise.all(items.slice(i, i + size).map(fn))))
+  }
+  return out
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100
+
 // ── Factory ──────────────────────────────────────────────────────────────────
 
 export function createNegocioTools(deps: NegocioToolDeps) {
@@ -501,6 +575,167 @@ export function createNegocioTools(deps: NegocioToolDeps) {
           const { rows, ...rest } = d ?? {}
           const tarde = (Array.isArray(rows) ? rows : []).filter((r) => r.estado === "tarde" || r.estado === "vencida_en_curso")
           return { ...rest, opsTardeOVencidas: cap(tarde, 20), periodo: p }
+        } catch (err) {
+          return classifySapError(err)
+        }
+      },
+    }),
+
+    compras_proveedor: tool({
+      description:
+        "FUENTE para cifras de COMPRAS a un proveedor (cuánto le compramos, cuánto le debemos, qué le compramos, cuánto le pagamos). Requiere el CardCode exacto (búscalo antes con buscar_socio_o_item). " +
+        "modo='facturas': compras netas SIN IVA del periodo (facturas − notas crédito de proveedor, sin anuladas) con desglose por mes y mayores facturas — úsalo para '¿cuánto le hemos comprado/nos ha facturado?'. Sin desde/hasta usa el año en curso; máximo 24 meses por consulta. " +
+        "modo='resumen': saldo por pagar y vencido (CON IVA), órdenes de compra abiertas y última OC. " +
+        "modo='aging': lo que se le debe por tramos de vencimiento (CON IVA), factura por factura. " +
+        "modo='pagos': pagos hechos al proveedor (CON IVA). " +
+        "modo='historial': artículos más comprados en los últimos N meses. " +
+        "Para cuentas por pagar de TODA la empresa usa cartera_empresa(cuentas_por_pagar); para el gasto total en compras del mes, kpi_negocio(gasto_compras_mes). " +
+        "Devuelve 'definicion': explícasela al usuario con la cifra (con o sin IVA).",
+      inputSchema: z.object({
+        cardCode: z.string().min(1).describe("CardCode exacto del proveedor"),
+        modo: z.enum(["facturas", "resumen", "aging", "pagos", "historial"]),
+        desde: isoDate.optional().describe("Solo modo facturas: inicio YYYY-MM-DD (junto con 'hasta')"),
+        hasta: isoDate.optional().describe("Solo modo facturas: fin YYYY-MM-DD (junto con 'desde')"),
+        meses: z.number().int().min(1).max(36).optional().describe("Solo modo historial (default 12)"),
+        topN: z.number().int().min(1).max(50).optional().describe("Solo modo historial: cuántos artículos (default 10)"),
+        limite: z.number().int().min(1).max(200).optional().describe("Solo modo pagos: cuántos pagos listar (default 50)"),
+      }),
+      execute: async (
+        { cardCode, modo, desde, hasta, meses, topN, limite }:
+        { cardCode: string; modo: ModoCompras; desde?: string; hasta?: string; meses?: number; topN?: number; limite?: number },
+        { toolCallId },
+      ) => {
+        const cc = cardCode.trim()
+        const base = `/suppliers/${encodeURIComponent(cc)}`
+        const definicion = DEFINICION_COMPRAS[modo]
+        try {
+          if (modo === "resumen") {
+            deps.status(toolCallId, `Consultando resumen del proveedor ${cc}…`)
+            return { resumen: unwrap<unknown>(await deps.get<unknown>(`${base}/summary`)), definicion }
+          }
+          if (modo === "aging") {
+            deps.status(toolCallId, `Consultando antigüedad de saldos con ${cc}…`)
+            return { aging: unwrap<unknown>(await deps.get<unknown>(`${base}/aging`)), definicion }
+          }
+          if (modo === "pagos") {
+            deps.status(toolCallId, `Consultando pagos a ${cc}…`)
+            return { pagos: unwrap<unknown>(await deps.get<unknown>(`${base}/payments${qs({ limit: limite ?? 50 })}`)), definicion }
+          }
+          if (modo === "historial") {
+            const m = meses ?? 12
+            deps.status(toolCallId, `Analizando compras a ${cc}…`)
+            return {
+              historial: unwrap<unknown>(await deps.get<unknown>(`${base}/history${qs({ months: m, topN: topN ?? 10 })}`)),
+              meses: m,
+              definicion,
+            }
+          }
+
+          // modo === "facturas"
+          let p: { desde: string; hasta: string; porDefecto: boolean }
+          if (!desde && !hasta) {
+            const hoy = today()
+            p = { desde: `${hoy.slice(0, 4)}-01-01`, hasta: hoy, porDefecto: true }
+          } else {
+            const r = resolvePeriodo(desde, hasta, today())
+            if ("error" in r) return r
+            p = r
+          }
+          const mesesRango = mesesCalendario(p.desde, p.hasta)
+          if (mesesRango.length > MAX_MESES_FACTURAS) {
+            return { error: { code: "INVALID_PERIOD", message: `El periodo abarca ${mesesRango.length} meses; el máximo es ${MAX_MESES_FACTURAS}. Divide la consulta en tramos (por ejemplo, año por año) y suma los resultados.`, retryable: true } }
+          }
+          deps.status(toolCallId, `Sumando compras a ${cc} (${mesesRango.length} ${mesesRango.length === 1 ? "mes" : "meses"})…`)
+          const excludedSet = new Set(deps.excludedDates ?? [])
+          const advertencias: string[] = []
+
+          // 1) Facturas de proveedor: el backend no filtra por proveedor → mes a mes y filtro aquí.
+          const porMesRaw = await inBatches(mesesRango, CONCURRENCIA_MESES, async (mes) => {
+            const res = await deps.get<unknown>(`/purchasing/invoices${qs({ from: mes.from, to: mes.to })}`)
+            const rows = unwrap<PurchaseInvoiceRow[]>(res)
+            return { mes, rows: Array.isArray(rows) ? rows : [] }
+          })
+          const vistos = new Set<string>()
+          const facturas: { docNum: number; fecha: string; neto: number }[] = []
+          let excluidasPorFecha = 0
+          let cardName: string | undefined
+          for (const { mes, rows } of porMesRaw) {
+            if (rows.length >= TOPE_FACTURAS_BACKEND) {
+              advertencias.push(`El mes ${mes.from.slice(0, 7)} llegó al tope de ${TOPE_FACTURAS_BACKEND} facturas del backend: el total de ese mes puede estar incompleto.`)
+            }
+            for (const r of rows) {
+              if (r.cardCode !== cc) continue
+              const fecha = normDate(r.docDate)
+              if (!fecha || fecha < p.desde || fecha > p.hasta) continue
+              if (excludedSet.has(fecha)) { excluidasPorFecha++; continue }
+              // Versiones viejas del backend repetían cada factura por línea (ver MC lib/finance/sap.ts).
+              const key = `${r.docNum}|${fecha}`
+              if (vistos.has(key)) continue
+              vistos.add(key)
+              cardName ??= r.cardName
+              facturas.push({ docNum: r.docNum, fecha, neto: Number(r.neto) || 0 })
+            }
+          }
+          if (excluidasPorFecha > 0) {
+            advertencias.push(`Se excluyeron ${excluidasPorFecha} factura(s) de fechas que la empresa marca como saldos iniciales de migración (${[...excludedSet].join(", ")}), igual que Mission Control.`)
+          }
+          const totalFacturas = facturas.reduce((s, f) => s + f.neto, 0)
+          type CeldaMes = { mes: string; facturas: number; cantidad: number; notasCredito?: number }
+          const porMes = new Map<string, CeldaMes>()
+          for (const f of facturas) {
+            const k = f.fecha.slice(0, 7)
+            const cell = porMes.get(k) ?? { mes: k, facturas: 0, cantidad: 0 }
+            cell.facturas += f.neto
+            cell.cantidad++
+            porMes.set(k, cell)
+          }
+
+          // 2) Notas crédito de proveedor (ORPC vía /compras/notas-credito → PurchaseCreditNotes).
+          //    Fail-soft: si fallan, se devuelve el total de facturas con una advertencia explícita.
+          let notasCredito: { cantidad: number; totalSinIva: number } | null = null
+          try {
+            const filter = `CardCode eq '${cc.replace(/'/g, "''")}' and DocDate ge '${p.desde}' and DocDate le '${p.hasta}'`
+            const ncRes = await deps.get<unknown>(
+              `/compras/notas-credito${qs({ $filter: filter, $select: "DocEntry,DocNum,DocDate,Cancelled,DocumentLines", $top: TOPE_NOTAS_CREDITO })}`,
+            )
+            const ncRows = unwrap<CreditNoteRow[]>(ncRes)
+            const rows = Array.isArray(ncRows) ? ncRows : []
+            if (rows.length >= TOPE_NOTAS_CREDITO) {
+              advertencias.push(`Llegó al tope de ${TOPE_NOTAS_CREDITO} notas crédito: el descuento por notas crédito puede estar incompleto.`)
+            }
+            // Cancelled='tYES' = NC anulada. Límite conocido (sin verificar en vivo): el documento
+            // de cancelación (CANCELED='C' en SQL) podría venir como 'tNO' por OData; es raro en
+            // notas crédito de proveedor y no se pudo contrastar contra $metadata de los tenants.
+            const validas = rows.filter((nc) => nc.Cancelled !== "tYES" && !excludedSet.has(normDate(nc.DocDate)))
+            let totalNc = 0
+            for (const nc of validas) {
+              const neto = (nc.DocumentLines ?? []).reduce((s, l) => s + (Number(l.LineTotal) || 0), 0)
+              totalNc += neto
+              const k = normDate(nc.DocDate).slice(0, 7)
+              if (k) {
+                const cell: CeldaMes = porMes.get(k) ?? { mes: k, facturas: 0, cantidad: 0 }
+                cell.notasCredito = (cell.notasCredito ?? 0) + neto
+                porMes.set(k, cell)
+              }
+            }
+            notasCredito = { cantidad: validas.length, totalSinIva: round2(totalNc) }
+          } catch {
+            advertencias.push("No se pudieron consultar las notas crédito del proveedor: la cifra es SOLO facturas (no descuenta notas crédito). Dilo al usuario.")
+          }
+
+          const mayores = [...facturas].sort((a, b) => b.neto - a.neto)
+          return {
+            proveedor: { cardCode: cc, ...(cardName ? { cardName } : {}) },
+            periodo: p,
+            facturas: { cantidad: facturas.length, totalSinIva: round2(totalFacturas), mayores: cap(mayores, 10) },
+            notasCredito,
+            comprasNetasSinIva: round2(totalFacturas - (notasCredito?.totalSinIva ?? 0)),
+            porMes: [...porMes.values()]
+              .sort((a, b) => a.mes.localeCompare(b.mes))
+              .map((c) => ({ ...c, facturas: round2(c.facturas), ...(c.notasCredito !== undefined ? { notasCredito: round2(c.notasCredito) } : {}) })),
+            definicion,
+            ...(advertencias.length ? { advertencias } : {}),
+          }
         } catch (err) {
           return classifySapError(err)
         }
