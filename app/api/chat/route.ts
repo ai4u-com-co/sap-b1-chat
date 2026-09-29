@@ -34,7 +34,7 @@ import { fetchDocumentoConFallback } from "@/lib/chat/obtener-documento"
 import { fetchListarRegistrosConFallback } from "@/lib/chat/listar-registros"
 import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
 import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
-import { withSapTimeout } from "@/lib/chat/with-timeout"
+import { createTurnBudget } from "@/lib/chat/with-timeout"
 import { createChatPersistence, type PersistDb } from "@/lib/chat/persistence"
 import { createNegocioTools } from "@/lib/chat/tools/negocio"
 import { buildBusquedaPath, sanitizeTexto, type TipoBusqueda } from "@/lib/chat/busqueda-socios"
@@ -170,6 +170,11 @@ function validateSqlConnectorRules(rawSql: string): SapError | null {
 
 // ── Handler principal ────────────────────────────────────────────
 export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
+  // Presupuesto del turno (lib/chat/with-timeout.ts): cada llamada SAP espera
+  // como máximo SAP_TOOL_TIMEOUT_MS (> techo del gateway) y no se inicia una
+  // nueva si lo que queda de maxDuration no alcanza para completarla y cerrar.
+  const turnBudget = createTurnBudget({ maxDurationMs: maxDuration * 1000 })
+  const sapCall = turnBudget.sap
   const internal = resolveAuth(req)
   const tenantId = internal?.tenantId ?? await getTenantId()
   const apiKey   = internal?.sapApiKey ?? await getApiKey()
@@ -216,7 +221,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
 
   // ── Persistencia temprana de sesión + mensaje de usuario ─────────
   // Se hace ANTES del tool loop por dos razones:
-  // 1. Un turno que muere a mitad (timeout de withSapTimeout u otro fallo que
+  // 1. Un turno que muere a mitad (timeout de sapCall/withSapTimeout u otro fallo que
   //    mate el stream) no pierde el rastro de la sesión ni del mensaje.
   // 2. `chat_tool_calls` tiene FK a chat_sessions: la sesión debe existir antes
   //    del primer tool call.
@@ -307,7 +312,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
       }
       const [sapCtx, catalogResult] = await Promise.all([
         fetchSapContext(client, tenantId),
-        withSapTimeout(client.catalogList()).catch(() => null),
+        sapCall(() => client.catalogList()).catch(() => null),
       ])
       writer.write({ type: "data-status", data: { text: "Analizando tu consulta…" } } as never)
 
@@ -388,7 +393,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           // misma definición de venta que Pulse/Finanzas de Mission Control. Van
           // primero a propósito — son la fuente preferida para cifras de venta.
           ...createNegocioTools({
-            get: <T,>(path: string) => withSapTimeout(client.get<T>(path)),
+            get: <T,>(path: string) => sapCall(() => client.get<T>(path)),
             status: (toolCallId, text) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text } } as never)
             },
@@ -404,7 +409,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ terminoBusqueda }: { terminoBusqueda: string }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Buscando esquema de '${terminoBusqueda}'…` } } as never)
               try {
-                const result = await withSapTimeout(client.schema(terminoBusqueda))
+                const result = await sapCall(() => client.schema(terminoBusqueda))
                 discoveredTables.add(terminoBusqueda.trim().toUpperCase())
                 for (const r of result.resultados as Array<{ tabla?: string }>) {
                   if (r.tabla) discoveredTables.add(r.tabla.toUpperCase())
@@ -442,7 +447,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               }
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Ejecutando consulta SQL en SAP…" } } as never)
               try {
-                const result = await withSapTimeout(client.sapQuery(sql))
+                const result = await sapCall(() => client.sapQuery(sql))
                 writer.write({ type: "data-tool-status", data: { toolCallId, text: `${result.count} registros procesados` } } as never)
                 if (result.rows.length > 50) {
                   return {
@@ -477,7 +482,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ query, params, limit }: { query: string; params?: Record<string, unknown>; limit?: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Ejecutando query '${query}'…` } } as never)
               try {
-                const result = await withSapTimeout(client.catalogQuery(query, params, limit))
+                const result = await sapCall(() => client.catalogQuery(query, params, limit))
                 writer.write({ type: "data-tool-status", data: { toolCallId, text: `${result.count} registros` } } as never)
                 if (result.rows.length > 50) {
                   return {
@@ -502,7 +507,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async (_args: Record<string, never>, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Cargando catálogo de queries…" } } as never)
               try {
-                return await withSapTimeout(client.catalogList())
+                return await sapCall(() => client.catalogList())
               } catch (err) {
                 return classifySapError(err)
               }
@@ -529,7 +534,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Obteniendo documento ${id}…` } } as never)
               try {
                 const { document, fallbackSinFiltros } = await fetchDocumentoConFallback(
-                  (path) => withSapTimeout(client.get<unknown>(path)), entityKey, id, expand, select
+                  (path) => sapCall(() => client.get<unknown>(path)), entityKey, id, expand, select
                 )
                 if (fallbackSinFiltros) {
                   writer.write({ type: "data-tool-status", data: { toolCallId, text: "SAP rechazó los campos solicitados, se devolvió el documento completo." } } as never)
@@ -575,7 +580,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Consultando ${entityKey}…` } } as never)
               try {
                 const { rows, count, fallbackSinFiltrosDeCampos } = await fetchListarRegistrosConFallback(
-                  (path) => withSapTimeout(client.get<{ data?: unknown[] }>(path)), entityKey, query
+                  (path) => sapCall(() => client.get<{ data?: unknown[] }>(path)), entityKey, query
                 )
                 if (fallbackSinFiltrosDeCampos) {
                   writer.write({ type: "data-tool-status", data: { toolCallId, text: `SAP rechazó los campos solicitados, se devolvieron ${count} registros sin filtrar campos.` } } as never)
@@ -613,7 +618,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               }
               try {
                 const { path, criterio } = buildBusquedaPath(tipo, texto, limit)
-                const res = await withSapTimeout(client.odata<{ value?: unknown[] }>(path))
+                const res = await sapCall(() => client.odata<{ value?: unknown[] }>(path))
                 const resultados = res.value ?? []
                 return {
                   resultados,
@@ -639,7 +644,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Consultando perfil de ${cardCode}…` } } as never)
               try {
                 const path = modo === "balance" ? `/customers/${cardCode}/balance` : `/customers/${cardCode}/summary`
-                const data = await withSapTimeout(client.get<unknown>(path))
+                const data = await sapCall(() => client.get<unknown>(path))
                 return { [modo === "balance" ? "balance" : "summary"]: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -655,7 +660,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ cardCode, meses, topN }: { cardCode: string; meses: number; topN: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Analizando historial de ${cardCode}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/customers/${cardCode}/history?months=${meses}&topN=${topN}`))
+                const data = await sapCall(() => client.get<unknown>(`/customers/${cardCode}/history?months=${meses}&topN=${topN}`))
                 return { history: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -667,7 +672,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ cardCode }: { cardCode: string }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Consultando facturas vencidas de ${cardCode}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/customers/${cardCode}/aging`))
+                const data = await sapCall(() => client.get<unknown>(`/customers/${cardCode}/aging`))
                 return { aging: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -679,7 +684,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ cardCode }: { cardCode: string }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Verificando crédito de ${cardCode}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/customers/${cardCode}/credit-check`))
+                const data = await sapCall(() => client.get<unknown>(`/customers/${cardCode}/credit-check`))
                 return { credit: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -694,7 +699,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ cardCode, limite }: { cardCode: string; limite: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Consultando pagos de ${cardCode}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/customers/${cardCode}/payments?limit=${limite}`))
+                const data = await sapCall(() => client.get<unknown>(`/customers/${cardCode}/payments?limit=${limite}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -709,7 +714,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ meses, limite }: { meses: number; limite: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Buscando clientes sin compras en ${meses} meses…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/customers/churn?months=${meses}&limit=${limite}`))
+                const data = await sapCall(() => client.get<unknown>(`/customers/churn?months=${meses}&limit=${limite}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -722,7 +727,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Consultando pipeline de ventas…" } } as never)
               try {
                 const qs = cardCode ? `?cardCode=${cardCode}` : ""
-                const data = await withSapTimeout(client.get<unknown>(`/sales/pipeline${qs}`))
+                const data = await sapCall(() => client.get<unknown>(`/sales/pipeline${qs}`))
                 return { pipeline: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -744,7 +749,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
                 const parts = [`topN=${topN}`]
                 if (desde) parts.push(`from=${desde}`)
                 if (hasta) parts.push(`to=${hasta}`)
-                const data = await withSapTimeout(client.get<unknown>(`/sales/analysis?${parts.join("&")}`))
+                const data = await sapCall(() => client.get<unknown>(`/sales/analysis?${parts.join("&")}`))
                 return { analysis: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -758,7 +763,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async (_args: Record<string, never>, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Calculando tendencia de ventas 12 meses…" } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>("/sales/trend"))
+                const data = await sapCall(() => client.get<unknown>("/sales/trend"))
                 return { trend: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -770,7 +775,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ limite }: { limite: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Consultando pedidos con entrega vencida…" } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/sales/delayed?limit=${limite}`))
+                const data = await sapCall(() => client.get<unknown>(`/sales/delayed?limit=${limite}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -793,7 +798,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
                 if (estado) parts.push(`status=${estado}`)
                 if (desde) parts.push(`from=${desde}`)
                 if (hasta) parts.push(`to=${hasta}`)
-                const data = await withSapTimeout(client.get<unknown>(`/sales/orders?${parts.join("&")}`))
+                const data = await sapCall(() => client.get<unknown>(`/sales/orders?${parts.join("&")}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -805,7 +810,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ docEntry }: { docEntry: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Obteniendo pedido DocEntry ${docEntry}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/sales/orders/${docEntry}`))
+                const data = await sapCall(() => client.get<unknown>(`/sales/orders/${docEntry}`))
                 return { order: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -820,7 +825,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
                 const parts: string[] = []
                 if (desde) parts.push(`from=${desde}`)
                 if (hasta) parts.push(`to=${hasta}`)
-                const data = await withSapTimeout(client.get<unknown>(`/commercial/quotations${parts.length ? "?" + parts.join("&") : ""}`))
+                const data = await sapCall(() => client.get<unknown>(`/commercial/quotations${parts.length ? "?" + parts.join("&") : ""}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -839,7 +844,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
                 const parts = [`limit=${limite}`]
                 if (desde) parts.push(`from=${desde}`)
                 if (hasta) parts.push(`to=${hasta}`)
-                const data = await withSapTimeout(client.get<unknown>(`/commercial/new-customers?${parts.join("&")}`))
+                const data = await sapCall(() => client.get<unknown>(`/commercial/new-customers?${parts.join("&")}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -854,7 +859,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
                 const parts: string[] = []
                 if (desde) parts.push(`from=${desde}`)
                 if (hasta) parts.push(`to=${hasta}`)
-                const data = await withSapTimeout(client.get<unknown>(`/commercial/sales-by-group${parts.length ? "?" + parts.join("&") : ""}`))
+                const data = await sapCall(() => client.get<unknown>(`/commercial/sales-by-group${parts.length ? "?" + parts.join("&") : ""}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -870,7 +875,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Consultando stock de ${itemCode}…` } } as never)
               try {
                 const qs = almacen ? `?almacen=${almacen}` : ""
-                const data = await withSapTimeout(client.get<unknown>(`/inventory/${itemCode}/availability${qs}`))
+                const data = await sapCall(() => client.get<unknown>(`/inventory/${itemCode}/availability${qs}`))
                 return { availability: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -883,7 +888,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Consultando artículos bajo stock mínimo…" } } as never)
               try {
                 const qs = almacen ? `?almacen=${almacen}` : ""
-                const data = await withSapTimeout(client.get<{ items?: unknown[]; count?: number }>(`/inventory/low-stock${qs}`))
+                const data = await sapCall(() => client.get<{ items?: unknown[]; count?: number }>(`/inventory/low-stock${qs}`))
                 return { items: data.items ?? data, count: data.count }
               } catch (err) { return classifySapError(err) }
             },
@@ -901,7 +906,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               try {
                 const parts = [`days=${dias}`]
                 if (almacen) parts.push(`warehouseCode=${almacen}`)
-                const data = await withSapTimeout(client.get<unknown>(`/inventory/${itemCode}/movements?${parts.join("&")}`))
+                const data = await sapCall(() => client.get<unknown>(`/inventory/${itemCode}/movements?${parts.join("&")}`))
                 return { movements: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -913,7 +918,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ itemCode }: { itemCode: string }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Cargando ficha de ${itemCode}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/products/${itemCode}`))
+                const data = await sapCall(() => client.get<unknown>(`/products/${itemCode}`))
                 return { product: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -928,7 +933,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ texto, limite }: { texto: string; limite: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Buscando productos '${texto}'…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/products/search?q=${encodeURIComponent(texto)}&limit=${limite}`))
+                const data = await sapCall(() => client.get<unknown>(`/products/search?q=${encodeURIComponent(texto)}&limit=${limite}`))
                 return { results: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -944,7 +949,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Analizando ${label}…` } } as never)
               try {
                 const path = tipo === "cuentas_por_cobrar" ? "/finance/receivables" : "/finance/payables"
-                const data = await withSapTimeout(client.get<unknown>(path))
+                const data = await sapCall(() => client.get<unknown>(path))
                 return { [tipo]: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -956,7 +961,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async (_args: Record<string, never>, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Calculando proyección de flujo de caja 90 días…" } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>("/finance/cashflow"))
+                const data = await sapCall(() => client.get<unknown>("/finance/cashflow"))
                 return { cashflow: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -979,7 +984,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
                 if (estado) parts.push(`status=${estado}`)
                 if (desde) parts.push(`from=${desde}`)
                 if (hasta) parts.push(`to=${hasta}`)
-                const data = await withSapTimeout(client.get<unknown>(`/purchasing/orders?${parts.join("&")}`))
+                const data = await sapCall(() => client.get<unknown>(`/purchasing/orders?${parts.join("&")}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -991,7 +996,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ docEntry }: { docEntry: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Cargando OC DocEntry ${docEntry}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/purchasing/orders/${docEntry}`))
+                const data = await sapCall(() => client.get<unknown>(`/purchasing/orders/${docEntry}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1008,7 +1013,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               try {
                 const parts = [`limit=${limite}`]
                 if (itemCode) parts.push(`itemCode=${itemCode}`)
-                const data = await withSapTimeout(client.get<unknown>(`/production/orders?${parts.join("&")}`))
+                const data = await sapCall(() => client.get<unknown>(`/production/orders?${parts.join("&")}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1020,7 +1025,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ docEntry }: { docEntry: number }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Cargando OP DocEntry ${docEntry}…` } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>(`/production/orders/${docEntry}`))
+                const data = await sapCall(() => client.get<unknown>(`/production/orders/${docEntry}`))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1032,7 +1037,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async (_args: Record<string, never>, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Analizando faltantes de materiales…" } } as never)
               try {
-                const data = await withSapTimeout(client.get<unknown>("/production/shortage"))
+                const data = await sapCall(() => client.get<unknown>("/production/shortage"))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1059,7 +1064,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Validando pedido para ${header.cardCode}…` } } as never)
               if (!confirmar) return { preview: header, mensaje: "Vista previa del pedido. Confirma para validar crédito/stock y crear en SAP." }
               try {
-                const data = await withSapTimeout(client.post<unknown>("/workflows/validate-and-create-order", { ...header, confirmar }))
+                const data = await sapCall(() => client.post<unknown>("/workflows/validate-and-create-order", { ...header, confirmar }))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1076,7 +1081,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: "Analizando faltantes y generando plan…" } } as never)
               if (!confirmar) return { preview: { defaultSupplier, supplierByWarehouse }, mensaje: "Vista previa del plan de reposición. Confirma para crear las OCs en SAP." }
               try {
-                const data = await withSapTimeout(client.post<unknown>("/workflows/replenish-shortages", { defaultSupplier, supplierByWarehouse, confirmar }))
+                const data = await sapCall(() => client.post<unknown>("/workflows/replenish-shortages", { defaultSupplier, supplierByWarehouse, confirmar }))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1091,7 +1096,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
             execute: async ({ docEntry, confirmar }: { docEntry: number; confirmar: boolean }, { toolCallId }) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Creando factura del pedido ${docEntry}…` : `Preparando factura del pedido ${docEntry}…` } } as never)
               try {
-                const data = await withSapTimeout(client.post<unknown>("/workflows/order-to-invoice", { docEntry, confirmar }))
+                const data = await sapCall(() => client.post<unknown>("/workflows/order-to-invoice", { docEntry, confirmar }))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1112,7 +1117,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Creando pedido para ${header.cardCode}…` : `Preparando pedido para ${header.cardCode}…` } } as never)
               if (!confirmar) return { preview: header, mensaje: "Vista previa. Confirma para crear en SAP." }
               try {
-                const data = await withSapTimeout(client.post<unknown>("/sales/orders", header))
+                const data = await sapCall(() => client.post<unknown>("/sales/orders", header))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1128,7 +1133,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Cancelando pedido ${docEntry}…` : `Preparando cancelación de pedido ${docEntry}…` } } as never)
               if (!confirmar) return { advertencia: `Se cancelará el pedido DocEntry ${docEntry}. Esta acción es irreversible. ¿Confirmas?` }
               try {
-                const data = await withSapTimeout(client.post<unknown>(`/sales/orders/${docEntry}/cancel`, {}))
+                const data = await sapCall(() => client.post<unknown>(`/sales/orders/${docEntry}/cancel`, {}))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1148,7 +1153,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Creando cotización para ${header.cardCode}…` : `Preparando cotización para ${header.cardCode}…` } } as never)
               if (!confirmar) return { preview: header, mensaje: "Vista previa. Confirma para crear en SAP." }
               try {
-                const data = await withSapTimeout(client.post<unknown>("/quotations", header))
+                const data = await sapCall(() => client.post<unknown>("/quotations", header))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1164,7 +1169,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Convirtiendo cotización ${docEntry}…` : `Preparando conversión de cotización ${docEntry}…` } } as never)
               if (!confirmar) return { advertencia: `Se convertirá la cotización DocEntry ${docEntry} en pedido. ¿Confirmas?` }
               try {
-                const data = await withSapTimeout(client.post<unknown>(`/quotations/${docEntry}/convert`, {}))
+                const data = await sapCall(() => client.post<unknown>(`/quotations/${docEntry}/convert`, {}))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1185,7 +1190,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Creando OC para ${header.cardCode}…` : `Preparando OC para ${header.cardCode}…` } } as never)
               if (!confirmar) return { preview: header, mensaje: "Vista previa. Confirma para crear en SAP." }
               try {
-                const data = await withSapTimeout(client.post<unknown>("/purchasing/orders", header))
+                const data = await sapCall(() => client.post<unknown>("/purchasing/orders", header))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1201,7 +1206,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Cancelando OC ${docEntry}…` : `Preparando cancelación de OC ${docEntry}…` } } as never)
               if (!confirmar) return { advertencia: `Se cancelará la OC DocEntry ${docEntry}. Esta acción es irreversible. ¿Confirmas?` }
               try {
-                const data = await withSapTimeout(client.post<unknown>(`/purchasing/orders/${docEntry}/cancel`, {}))
+                const data = await sapCall(() => client.post<unknown>(`/purchasing/orders/${docEntry}/cancel`, {}))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1222,7 +1227,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               writer.write({ type: "data-tool-status", data: { toolCallId, text: confirmar ? `Creando OP para ${payload.itemCode}…` : `Preparando OP para ${payload.itemCode}…` } } as never)
               if (!confirmar) return { preview: payload, mensaje: "Vista previa. Confirma para crear en SAP." }
               try {
-                const data = await withSapTimeout(client.post<unknown>("/production/orders", payload))
+                const data = await sapCall(() => client.post<unknown>("/production/orders", payload))
                 return { result: data }
               } catch (err) { return classifySapError(err) }
             },
@@ -1245,7 +1250,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               if (!confirmar) return { preview: parsed, entidad_sap: cfg.sapEntity, mensaje: "Vista previa. Muestra al usuario y pide confirmación." }
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Creando documento en ${cfg.sapEntity}…` } } as never)
               try {
-                const result = await withSapTimeout(client.sapWrite("POST", `/${cfg.sapEntity}`, parsed))
+                const result = await sapCall(() => client.sapWrite("POST", `/${cfg.sapEntity}`, parsed))
                 return { creado: result.result, mensaje: "Documento creado exitosamente en SAP." }
               } catch (err) { return classifySapError(err) }
             },
@@ -1269,7 +1274,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               if (!confirmar) return { documento: `${cfg.sapEntity}${key}`, cambios: parsed, mensaje: "Vista previa. Muestra los campos a modificar y pide confirmación." }
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Actualizando ${cfg.sapEntity}${key}…` } } as never)
               try {
-                await withSapTimeout(client.sapWrite("PATCH", `/${cfg.sapEntity}${key}`, parsed))
+                await sapCall(() => client.sapWrite("PATCH", `/${cfg.sapEntity}${key}`, parsed))
                 return { actualizado: true, documento: `${cfg.sapEntity}${key}`, mensaje: "Documento actualizado exitosamente." }
               } catch (err) { return classifySapError(err) }
             },
@@ -1294,7 +1299,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
               if (!confirmar) return { accion, documento: `${cfg.sapEntity}(${docEntry})`, advertencia: `Esta acción ejecutará '${accion}' en el documento ${docEntry}. Puede ser irreversible. ¿Confirmas?` }
               writer.write({ type: "data-tool-status", data: { toolCallId, text: `Ejecutando ${accion} en ${cfg.sapEntity}(${docEntry})…` } } as never)
               try {
-                const result = await withSapTimeout(client.sapWrite("ACTION", `/${cfg.sapEntity}(${docEntry})/${accion}`))
+                const result = await sapCall(() => client.sapWrite("ACTION", `/${cfg.sapEntity}(${docEntry})/${accion}`))
                 return { ejecutado: true, accion, docEntry, mensaje: `Acción '${accion}' ejecutada exitosamente.`, detalles: result.result }
               } catch (err) { return classifySapError(err) }
             },

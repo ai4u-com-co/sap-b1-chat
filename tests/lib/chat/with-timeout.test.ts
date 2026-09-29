@@ -14,10 +14,10 @@ import { withSapTimeout } from "@/lib/chat/with-timeout"
  *
  * `withSapTimeout` es el fix: envuelve cualquier `await client.*` con un
  * `Promise.race` contra un timeout mucho más corto que los 300s duros, y
- * el mensaje de error resultante contiene la palabra "timeout" a propósito
- * — `classifySapError` (route.ts) ya la reconoce y la clasifica como
- * `{ code: "SAP_TIMEOUT", retryable: true }` sin necesitar ningún cambio
- * en los `catch` existentes de las ~49 tools que llaman a SAP.
+ * rechaza con `ChatStoppedWaitingError` — `classifySapError` la clasifica
+ * como `{ code: "CHAT_TIMEOUT", retryable: false }` (desde el 29-sep: el
+ * chat dejó de esperar, el backend puede seguir trabajando; ver
+ * presupuesto-tiempos.test.ts) sin cambios en los `catch` de las ~49 tools.
  */
 describe("withSapTimeout", () => {
   it("resuelve con el valor real cuando la promesa gana la carrera", async () => {
@@ -40,8 +40,8 @@ describe("withSapTimeout", () => {
     await expect(withSapTimeout(neverResolves, 15)).rejects.toThrow(/15ms/)
   })
 
-  it("usa el default de 75000ms cuando no se pasa 'ms' explícito (no bloquea el test, solo inspecciona que no rechace antes)", async () => {
-    // No esperamos los 75s reales: solo confirmamos que con una promesa que
+  it("usa el default (SAP_TOOL_TIMEOUT_MS) cuando no se pasa 'ms' explícito (no bloquea el test, solo inspecciona que no rechace antes)", async () => {
+    // No esperamos los 65s reales: solo confirmamos que con una promesa que
     // resuelve rápido, el default no la corta.
     const result = await withSapTimeout(Promise.resolve("ok"))
     expect(result).toBe("ok")
