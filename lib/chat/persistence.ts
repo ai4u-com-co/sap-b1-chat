@@ -111,8 +111,10 @@ export function createChatPersistence(deps: {
   tenantId: string
   userId: string | undefined
   threadId: string | undefined
+  /** x-request-id del turno (ApiContext.requestId). */
+  requestId?: string
 }): ChatPersistence {
-  const { db, log, tenantId, userId, threadId } = deps
+  const { db, log, tenantId, userId, threadId, requestId } = deps
   const dbTenant = toDbTenantId(tenantId)
   let sessionId: string | null = null
 
@@ -153,7 +155,7 @@ export function createChatPersistence(deps: {
       sessionId = id
 
       const msgRes = await withDbTimeout(
-        db.from("chat_messages").insert({ session_id: id, role: "user", content: userText, metadata: {} } as never),
+        db.from("chat_messages").insert({ session_id: id, role: "user", content: userText, metadata: requestId ? { requestId } : {} } as never),
       )
       const msgErr = errorOf(msgRes)
       if (msgErr) report("chat_messages", msgErr, { role: "user" })
@@ -169,6 +171,7 @@ export function createChatPersistence(deps: {
           content: text ?? "",
           metadata: {
             modelId,
+            ...(requestId ? { requestId } : {}),
             toolCalls: truncateForStorage(toolCalls ?? []),
             toolResults: truncateForStorage(toolResults ?? []),
           },
@@ -191,6 +194,7 @@ export function createChatPersistence(deps: {
         sdkSuccess: event.success,
         output: event.success ? event.output : undefined,
         error: event.success ? undefined : event.error,
+        requestId,
       })
       await logToolCallResult(db as unknown as ToolCallLogClient, row, (e) =>
         report("chat_tool_calls", e, { toolName: event.toolName }),
