@@ -1,0 +1,44 @@
+name: Mejora o funcionalidad nueva
+description: Un cambio o algo nuevo que pidió un cliente o que queremos hacer
+title: "[Mejora] "
+labels: ["tipo:mejora"]
+body:
+  - type: input
+    id: ticket
+    attributes:
+      label: Ticket del cliente
+      description: Código del ticket si existe (FLX-123, TAMA-045, MAG-012, MH-008).
+      placeholder: FLX-123
+  - type: dropdown
+    id: tenant
+    attributes:
+      label: Tenant
+      options:
+        - Todos los tenants
+        - flexoimpresos
+        - tamaprint
+        - lamagdalena
+        - multihealth
+        - estudioindigo
+        - Otro (indicar abajo)
+    validations:
+      required: true
+  - type: textarea
+    id: pedido
+    attributes:
+      label: Qué se pidió
+      description: En palabras del cliente, tal cual, y la pantalla o módulo donde vive.
+    validations:
+      required: true
+  - type: textarea
+    id: criterio
+    attributes:
+      label: Cómo sabremos que quedó listo
+      description: Comportamiento verificable en producción (no "el build pasó").
+    validations:
+      required: true
+  - type: textarea
+    id: dudas
+    attributes:
+      label: Dudas abiertas
+      description: Todo lo ambiguo que hay que confirmar con el cliente antes de construir.

@@ -1,0 +1,44 @@
+name: Bug
+description: Algo funciona mal o da un dato incorrecto
+title: "[Bug] "
+labels: ["tipo:bug"]
+body:
+  - type: input
+    id: ticket
+    attributes:
+      label: Ticket del cliente
+      description: Código del ticket si existe (FLX-123, TAMA-045, MAG-012, MH-008).
+      placeholder: FLX-123
+  - type: dropdown
+    id: tenant
+    attributes:
+      label: Tenant afectado
+      description: Si aplica a varios, elige "Todos" y explica abajo. Nunca asumas un solo tenant sin verificarlo.
+      options:
+        - Todos los tenants
+        - flexoimpresos
+        - tamaprint
+        - lamagdalena
+        - multihealth
+        - estudioindigo
+        - Otro (indicar abajo)
+    validations:
+      required: true
+  - type: textarea
+    id: que-pasa
+    attributes:
+      label: Qué pasa
+      description: Lo que ve el usuario, con pasos para reproducirlo y captura si la hay.
+    validations:
+      required: true
+  - type: textarea
+    id: esperado
+    attributes:
+      label: Qué debería pasar
+    validations:
+      required: true
+  - type: textarea
+    id: evidencia
+    attributes:
+      label: Evidencia
+      description: Logs de runtime, URL, dato real de SAP/Supabase. Si es una hipótesis, dilo como hipótesis.
