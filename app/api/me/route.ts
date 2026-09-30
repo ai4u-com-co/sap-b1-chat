@@ -6,9 +6,13 @@ import { getBackendUrl, sapBackendUnavailableResponse } from "@/lib/sap-gateway"
 export const GET = withApiHandler(async (_req: Request, apiCtx: ApiContext) => {
   const [apiKey, tenantId] = await Promise.all([getApiKey(), getTenantId()])
 
-  if (!apiKey || !tenantId) {
+  if (!tenantId) {
     return Response.json({ error: "No autorizado" }, { status: 401 })
   }
+
+  // Sin llave del tenant (p. ej. tenants proxy como magdalena) no se llama al gateway:
+  // mismo resultado que antes, cuando se mandaba "S2S_AUTH" y el gateway respondía 401.
+  if (!apiKey) return Response.json({ tenant: tenantId, name: tenantId })
 
   try {
     const res = await fetch(`${getBackendUrl()}/api/v1/me`, {

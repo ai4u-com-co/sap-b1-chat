@@ -6,6 +6,8 @@
  * Contrato de env Ai4U (fase 1):
  *   - URL: SAP_BACKEND_URL → alias BACKEND_URL, NEXT_PUBLIC_BACKEND_URL (con aviso).
  *   - Llave: getGatewayApiKey(tenant) → {TENANT}_SAP_API_KEY → alias → SAP_BACKEND_API_KEY.
+ *     Sin llave para el tenant → null (fail-closed): ya no existe el placeholder
+ *     "S2S_AUTH" que dejaba autenticar por el secreto compartido `x-mc-secret`.
  */
 import { getGatewayApiKey, readEnv, type EnvSource } from "@ai4u/config/env"
 
@@ -24,12 +26,6 @@ export class SapBackendUrlMissingError extends Error {
     this.name = "SapBackendUrlMissingError"
   }
 }
-
-/**
- * Valor histórico de X-API-Key cuando el tenant no tiene llave propia: el gateway
- * ignora ese valor y autentica por `x-mc-secret` (BackendClient lo manda).
- */
-export const S2S_AUTH_PLACEHOLDER = "S2S_AUTH"
 
 /**
  * URL base del gateway: SAP_BACKEND_URL → alias (con aviso). Sin ninguna:
@@ -52,12 +48,16 @@ export function sapBackendUnavailableResponse(err: unknown): Response | null {
   return Response.json({ error: "Servicio SAP no disponible temporalmente" }, { status: 503 })
 }
 
-/** Llave X-API-Key del tenant de la sesión, o el placeholder "S2S_AUTH" si no tiene. */
-export function resolveGatewayApiKey(tenantId: string, env?: EnvSource): string {
+/**
+ * Llave X-API-Key del tenant de la sesión, o null si no tiene. Sin llave no se
+ * llama al gateway (fail-closed): antes se mandaba el placeholder "S2S_AUTH" y el
+ * gateway autenticaba por el secreto compartido `x-mc-secret`.
+ */
+export function resolveGatewayApiKey(tenantId: string, env?: EnvSource): string | null {
   try {
-    return getGatewayApiKey(tenantId, env)?.key ?? S2S_AUTH_PLACEHOLDER
+    return getGatewayApiKey(tenantId, env)?.key ?? null
   } catch {
     // normalizeTenant lanza con ids vacíos/inválidos: mismo resultado que "sin llave".
-    return S2S_AUTH_PLACEHOLDER
+    return null
   }
 }

@@ -43,6 +43,6 @@ export async function getTenantId(): Promise<string | null> {
 export async function getApiKey(): Promise<string | null> {
   const tenantId = await getTenantId()
   if (!tenantId) return null
-  // {TENANT}_SAP_API_KEY (contrato de env) o el placeholder "S2S_AUTH" (auth por x-mc-secret).
+  // {TENANT}_SAP_API_KEY (contrato de env). Sin llave → null (sin respaldo "S2S_AUTH").
   return resolveGatewayApiKey(tenantId)
 }
