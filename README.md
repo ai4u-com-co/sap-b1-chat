@@ -2,7 +2,7 @@
 
 Asistente conversacional con IA para consultar y operar **SAP Business One** en lenguaje natural. Se accede desde Mission Control (SSO) y proxea contra `sap-b1-backend`, que ejecuta las herramientas SAP.
 
-**Stack:** Next.js 15 · React 19 · Vercel AI SDK v6 · `@ai4u/design-system` (tokens) · Dev en `:4101`
+**Stack:** Next.js 16 · React 19 · Vercel AI SDK v6 · `@ai4u/design-system` (tokens) · Dev en `:4101`
 
 ---
 
@@ -28,7 +28,7 @@ La API key de SAP **nunca** llega al cliente ni a la URL. El flujo:
 3. `app/lib/session.ts` resuelve la API key desde la sesión: `{TENANT}_SAP_API_KEY`
 4. Las rutas API (`/api/chat`, `/api/suggestions`, `/api/me`) leen la key del servidor
 
-`middleware.ts` (gate en `lib/session-gate.ts`, runtime Node) protege `/api/*`: exige cookie de sesión válida o `x-internal-secret` de Mission Control (S2S). Públicas: `/api/mc-auth` (handoff SSO) y `/api/changelog`. En producción falla cerrado (500) si falta `MISSION_CONTROL_SECRET`. Cada handler vuelve a validar la sesión (defensa en profundidad).
+`proxy.ts` (convención de Next 16; gate en `lib/session-gate.ts`, siempre runtime Node) protege `/api/*`: exige cookie de sesión válida o `x-internal-secret` de Mission Control (S2S). Públicas: `/api/mc-auth` (handoff SSO) y `/api/changelog`. En producción falla cerrado (500) si falta `MISSION_CONTROL_SECRET`. Cada handler vuelve a validar la sesión (defensa en profundidad).
 
 ### Features
 - **Multi-hilo** con persistencia en localStorage (`useThreads`)
@@ -59,4 +59,4 @@ Ver `.env.example`.
 - `npm run type-check` — `tsc --noEmit`
 
 ## Acceso en desarrollo
-El chat solo es accesible con sesión válida. En dev (sin `MISSION_CONTROL_SECRET`) el `middleware.ts` permite acceso. Para probar el flujo completo, accede vía Mission Control.
+El chat solo es accesible con sesión válida. En dev (sin `MISSION_CONTROL_SECRET`) el `proxy.ts` permite acceso. Para probar el flujo completo, accede vía Mission Control.
