@@ -32,7 +32,7 @@ process.env.MISSION_CONTROL_SECRET = "test-internal-secret-flx082"
 // Puerto sin listener real: BackendClient (SAP) falla rápido con conexión
 // rechazada, y el código de fetchSapContext/catalogList ya swallowea ese
 // error (try/catch → [] / null) — no forma parte del mecanismo bajo prueba.
-process.env.BACKEND_URL = "http://127.0.0.1:4100"
+process.env.SAP_BACKEND_URL = "http://127.0.0.1:4100"
 delete process.env.NEXT_PUBLIC_SUPABASE_URL
 delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 

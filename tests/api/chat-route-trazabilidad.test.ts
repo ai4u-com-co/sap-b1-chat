@@ -13,7 +13,7 @@ import type { LanguageModelV3StreamPart } from "@ai-sdk/provider"
  */
 
 process.env.MISSION_CONTROL_SECRET = "test-internal-secret-traza"
-process.env.BACKEND_URL = "http://127.0.0.1:4100" // sin listener: la tool falla rápido, igual dispara el callback
+process.env.SAP_BACKEND_URL = "http://127.0.0.1:4100" // sin listener: la tool falla rápido, igual dispara el callback
 
 type Insert = { table: string; row: Record<string, unknown> }
 const inserts: Insert[] = []

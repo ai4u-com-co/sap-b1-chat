@@ -23,7 +23,7 @@ const BILLING_MSG =
 const FAKE_KEY = "sk-ant-api03-Ens" + "Z".repeat(88) + "1gAA"
 
 process.env.MISSION_CONTROL_SECRET = "test-internal-secret-billing"
-process.env.BACKEND_URL = "http://127.0.0.1:4100"
+process.env.SAP_BACKEND_URL = "http://127.0.0.1:4100"
 process.env.TAMAPRINT_ANTHROPIC_API_KEY = FAKE_KEY
 delete process.env.NEXT_PUBLIC_SUPABASE_URL
 delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
