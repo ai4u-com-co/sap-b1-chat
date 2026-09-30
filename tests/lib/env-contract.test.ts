@@ -8,7 +8,6 @@ import {
   getBackendUrl,
   resolveGatewayApiKey,
   LOCAL_GATEWAY_URL,
-  S2S_AUTH_PLACEHOLDER,
   SapBackendUrlMissingError,
   sapBackendUnavailableResponse,
 } from "@/lib/sap-gateway"
@@ -64,9 +63,11 @@ describe("gateway: llave por tenant", () => {
     expect(resolveGatewayApiKey("tamaprint", env)).toBe(k1)
     expect(resolveGatewayApiKey("flexoimpresos", env)).toBe(k2)
   })
-  it("sin llave del tenant: placeholder S2S_AUTH (comportamiento previo)", () => {
-    expect(resolveGatewayApiKey("tamaprint", { FLEXOIMPRESOS_SAP_API_KEY: val("x") })).toBe(S2S_AUTH_PLACEHOLDER)
-    expect(resolveGatewayApiKey("---", {})).toBe(S2S_AUTH_PLACEHOLDER)
+  it("sin llave del tenant: null (fail-closed, sin placeholder S2S_AUTH)", () => {
+    // La llave de otro tenant ni MISSION_CONTROL_SECRET sirven de respaldo.
+    expect(resolveGatewayApiKey("tamaprint", { FLEXOIMPRESOS_SAP_API_KEY: val("x") })).toBeNull()
+    expect(resolveGatewayApiKey("tamaprint", { MISSION_CONTROL_SECRET: val("mc") })).toBeNull()
+    expect(resolveGatewayApiKey("---", {})).toBeNull()
   })
 })
 

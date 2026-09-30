@@ -181,7 +181,7 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const tenantId = internal?.tenantId ?? await getTenantId()
   const apiKey   = internal?.sapApiKey ?? await getApiKey()
   const userId   = internal?.userId
-  if (!tenantId || !apiKey) {
+  if (!tenantId) {
     return Response.json({ error: "Sesión no válida. Accede desde Mission Control." }, { status: 401 })
   }
 
@@ -190,9 +190,15 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
     return Response.json({ error: "Body inválido. Se esperaba { messages: [...] }" }, { status: 400 })
   }
 
+  // Tenants proxy (sin SAP) no usan la llave del gateway: se resuelven antes de exigirla.
   const tenantBackend = getTenantBackend(tenantId)
   if (tenantBackend.type === "proxy") {
     return proxyToBackend(tenantBackend.proxyUrl ?? "", body.messages, body.model as string | undefined)
+  }
+
+  // Tenant SAP sin {TENANT}_SAP_API_KEY: fail-closed (ya no hay respaldo "S2S_AUTH" + x-mc-secret).
+  if (!apiKey) {
+    return Response.json({ error: "Sesión no válida. Accede desde Mission Control." }, { status: 401 })
   }
 
   const sessionId = body.sessionId as string | undefined

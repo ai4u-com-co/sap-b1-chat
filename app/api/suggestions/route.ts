@@ -76,13 +76,18 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   const apiKey   = isInternal ? req.headers.get("x-api-key")   : await getApiKey()
   const tenantId = isInternal ? req.headers.get("x-tenant-id") : await getTenantId()
 
-  if (!apiKey || !tenantId) {
+  if (!tenantId) {
     return Response.json({ error: "Sesión no válida. Accede desde Mission Control." }, { status: 401 })
   }
 
-  // Tenants no-SAP (proxy): sugerencias estáticas
+  // Tenants no-SAP (proxy): sugerencias estáticas (no usan la llave del gateway)
   if (getTenantBackend(tenantId).type === "proxy") {
     return Response.json({ questions: MAGDALENA_SUGGESTIONS, generatedAt: Date.now(), source: "static" })
+  }
+
+  // Tenant SAP sin {TENANT}_SAP_API_KEY: fail-closed (ya no hay respaldo "S2S_AUTH").
+  if (!apiKey) {
+    return Response.json({ error: "Sesión no válida. Accede desde Mission Control." }, { status: 401 })
   }
 
   const resolvedKey = resolveAnthropicKey(tenantId)

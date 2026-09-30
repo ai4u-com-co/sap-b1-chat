@@ -25,7 +25,7 @@ Mission Control → /api/mc-auth?token=... → cookie de sesión (8h)
 La API key de SAP **nunca** llega al cliente ni a la URL. El flujo:
 1. MC abre `/api/mc-auth?token=...` (token firmado, 5 min)
 2. Se valida y se setea una cookie de sesión firmada (`mc_session`, con expiry)
-3. `app/lib/session.ts` resuelve la API key desde la sesión: `{TENANT}_SAP_API_KEY`
+3. `app/lib/session.ts` resuelve la API key desde la sesión: `{TENANT}_SAP_API_KEY`. Si el tenant SAP no la tiene, la ruta responde 401 sin llamar al gateway (ya no existe el respaldo `"S2S_AUTH"` + `x-mc-secret`). Los tenants proxy (magdalena) no la necesitan.
 4. Las rutas API (`/api/chat`, `/api/suggestions`, `/api/me`) leen la key del servidor
 
 `middleware.ts` (gate en `lib/session-gate.ts`, runtime Node) protege `/api/*`: exige cookie de sesión válida o `x-internal-secret` de Mission Control (S2S). Públicas: `/api/mc-auth` (handoff SSO) y `/api/changelog`. En producción falla cerrado (500) si falta `MISSION_CONTROL_SECRET`. Cada handler vuelve a validar la sesión (defensa en profundidad).
