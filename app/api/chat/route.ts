@@ -25,6 +25,7 @@ function resolveAuth(req: Request): { tenantId: string; sapApiKey: string; userI
   return null
 }
 import { BackendClient } from "@ai4u/contracts"
+import { getGatewayIdentityHeaders } from "@ai4u/platform/gateway-identity"
 import { classifySapError, type SapError } from "@/lib/chat/sap-errors"
 import { ENTITY_MAP } from "@ai4u/contracts"
 import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type CatalogEntry } from "@/lib/chat/system-prompt"
@@ -219,10 +220,13 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
 
   // x-request-id = requestId de este request del chat: une el log del chat, el del
   // backend (su middleware lo reusa) y chat_tool_calls. x-consumer atribuye el tráfico.
+  // extraHeaders: identidad OIDC (`x-ai4u-identity`, Fase 3) en CADA llamada de las tools,
+  // igual que /api/me. Fail-open (sin token → `{}`); no puede pisar X-API-Key ni x-consumer.
   const client = new BackendClient(tenantId, apiKey, {
     baseUrl: backendUrl,
     requestId: apiCtx.requestId,
     consumer: "sap-b1-chat",
+    extraHeaders: () => getGatewayIdentityHeaders(),
   })
 
   // Model selection
