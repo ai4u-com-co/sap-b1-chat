@@ -1,6 +1,6 @@
 # SAP B1 Chat — Developer Guide
 
-Next.js 15 · React 19 · Vercel AI SDK v6 · `@ai4u/design-system` (tokens). Dev en `:4101`.
+Next.js 16 · React 19 · Vercel AI SDK v6 · `@ai4u/design-system` (tokens). Dev en `:4101`.
 
 > Arquitectura completa, auth y variables de entorno: ver `README.md`.
 

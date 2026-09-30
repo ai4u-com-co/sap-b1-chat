@@ -7,7 +7,7 @@ export default defineConfig({
       "@": path.resolve(__dirname, "."),
     },
   },
-  // tsconfig usa "jsx": "preserve" (lo exige Next); para importar componentes
+  // Vitest no lee el "jsx" de tsconfig (Next lo administra); para importar componentes
   // .tsx en tests, el transform de Vite (oxc) debe compilar JSX él mismo.
   oxc: { jsx: { runtime: "automatic" } },
   test: {

@@ -4,7 +4,7 @@ import { readEnv } from "@/lib/env"
 import { resolveGatewayApiKey } from "@/lib/sap-gateway"
 
 // Cookie estándar del ecosistema (antes `sap_chat_session`): la emite el receptor
-// /api/mc-auth y la leen getSession/getTenantId y el gate de middleware.
+// /api/mc-auth y la leen getSession/getTenantId y el gate de proxy.ts.
 export const COOKIE = MC_SESSION_COOKIE
 export const SESSION_TTL_MS = DEFAULT_SESSION_TTL_MS
 

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { NextRequest } from "next/server"
 import { createSession } from "@ai4u/mc-sso"
-import { middleware, config } from "@/middleware"
+import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server"
+import * as proxyModule from "@/proxy"
+import { proxy as middleware, config } from "@/proxy"
 
 const SECRET = "test-mission-control-secret"
 
@@ -16,7 +18,7 @@ function passed(res: Response) {
   return res.headers.get("x-middleware-next") === "1"
 }
 
-describe("middleware (gate de sesión)", () => {
+describe("proxy.ts (gate de sesión)", () => {
   beforeEach(() => {
     vi.stubEnv("MISSION_CONTROL_SECRET", SECRET)
     vi.stubEnv("MC_INTERNAL_SECRET", "")
@@ -24,10 +26,26 @@ describe("middleware (gate de sesión)", () => {
   })
   afterEach(() => vi.unstubAllEnvs())
 
-  it("usa la convención de Next 15: runtime nodejs y matcher solo /api", () => {
-    expect(config.runtime).toBe("nodejs")
+  it("usa la convención de Next 16: exporta `config` (no `proxyConfig`) sin `runtime` y matcher solo /api", () => {
+    expect("proxyConfig" in proxyModule).toBe(false)
+    expect("middleware" in proxyModule).toBe(false)
+    // Declarar `runtime` en proxy.ts rompe el build de Next 16 (siempre es Node).
+    expect("runtime" in config).toBe(false)
     expect(config.matcher).toEqual(["/api/:path*"])
   })
+
+  // Mismas rutas que protegía middleware.ts (matcher `/api/:path*`) en Next 15.
+  it.each([
+    "/api/chat", "/api/me", "/api/suggestions", "/api/mc-auth", "/api/changelog",
+    "/api/changelog?limit=5", "/api/chat/algo/anidado", "/api",
+  ])("el proxy corre en %s", (url) => {
+    expect(unstable_doesMiddlewareMatch({ config, url })).toBe(true)
+  })
+
+  it.each(["/", "/chat", "/apix", "/_next/static/chunk.js", "/favicon.ico", "/robots.txt"])(
+    "el proxy NO corre en %s", (url) => {
+      expect(unstable_doesMiddlewareMatch({ config, url })).toBe(false)
+    })
 
   it.each(["/api/chat", "/api/me", "/api/suggestions"])("sin sesión → 401 en %s", async (path) => {
     const res = middleware(req(path, { method: "POST" }))

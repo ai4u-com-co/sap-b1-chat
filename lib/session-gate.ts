@@ -5,7 +5,7 @@ import { verifyInternalSecret } from "@/lib/internal-auth"
 import { COOKIE } from "@/app/lib/session"
 
 /**
- * Gate central de sesión para `/api/*` (lo ejecuta `middleware.ts`).
+ * Gate central de sesión para `/api/*` (lo ejecuta `proxy.ts`).
  *
  * Es una capa ADICIONAL: cada handler sigue validando sesión por su cuenta
  * (defensa en profundidad). El gate no puede ser más estricto que los handlers
