@@ -1,0 +1,18 @@
+name: Tarea interna
+description: Trabajo técnico sin cliente detrás (refactor, deuda, infraestructura)
+title: "[Tarea] "
+labels: ["tipo:tarea"]
+body:
+  - type: textarea
+    id: que
+    attributes:
+      label: Qué hay que hacer
+    validations:
+      required: true
+  - type: textarea
+    id: por-que
+    attributes:
+      label: Por qué
+      description: El problema que resuelve o el riesgo que evita.
+    validations:
+      required: true
