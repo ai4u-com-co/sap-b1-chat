@@ -7,7 +7,7 @@ const SECRET = "test-mission-control-secret"
 
 function req(path: string, init: { cookie?: string; headers?: Record<string, string>; method?: string } = {}) {
   const headers = new Headers(init.headers)
-  if (init.cookie) headers.set("cookie", `sap_chat_session=${init.cookie}`)
+  if (init.cookie) headers.set("cookie", `mc_session=${init.cookie}`)
   return new NextRequest(new URL(path, "https://chat.example.com"), { method: init.method ?? "GET", headers })
 }
 

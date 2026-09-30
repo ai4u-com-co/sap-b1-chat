@@ -17,7 +17,7 @@ import { COOKIE } from "@/app/lib/session"
  *      /api/changelog  → proxy de solo lectura al changelog-service; hoy no exige sesión.
  *  - Llamadas servidor-a-servidor de Mission Control con `x-internal-secret`
  *    válido (/api/chat y /api/suggestions las aceptan sin cookie).
- *  - Cookie `sap_chat_session` firmada y vigente.
+ *  - Cookie `mc_session` firmada y vigente.
  *
  * Lo demás bajo /api → 401. Las páginas no pasan por acá: el matcher solo cubre
  * /api y la página muestra la pantalla de bloqueo vía `/api/me`.
