@@ -7,7 +7,28 @@ import type { LanguageModelV3StreamPart } from "@ai-sdk/provider"
  * route.ts se la pasa a BackendClient como `baseUrl`; si alguien la quita, BackendClient
  * volvería a resolver por su cuenta con su propia lista de alias (más corta que la de
  * @ai4u/config: no incluye SAP_B1_BACKEND_URL) y podría divergir de /api/me.
+ *
+ * Fase 3: esas mismas llamadas llevan `x-ai4u-identity` (extraHeaders de BackendClient,
+ * @ai4u/contracts v0.7.0) cuando hay token OIDC, y salen idénticas a antes cuando no.
+ * Se usa el helper REAL de @ai4u/platform/gateway-identity; solo se reemplaza la fuente
+ * del token (`getToken`) y se acorta el timeout (mismo patrón que me-route-identity).
  */
+
+const tokenSource = vi.hoisted(() => ({ fn: (async () => "") as (o: { audience: string }) => Promise<string> }))
+vi.mock("@ai4u/platform/gateway-identity", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@ai4u/platform/gateway-identity")>()
+  const silent = { warn: () => {}, debug: () => {} }
+  return {
+    ...actual,
+    getGatewayIdentityHeaders: (opts: Parameters<typeof actual.getGatewayIdentityHeaders>[0] = {}) =>
+      actual.getGatewayIdentityHeaders({
+        timeoutMs: 50,
+        logger: silent,
+        ...opts,
+        getToken: opts.getToken ?? ((o) => tokenSource.fn(o)),
+      }),
+  }
+})
 
 process.env.MISSION_CONTROL_SECRET = "test-internal-secret-backend-url"
 delete process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -51,15 +72,19 @@ vi.mock("@ai-sdk/anthropic", async () => {
 
 const URL_ENV = ["SAP_BACKEND_URL", "BACKEND_URL", "NEXT_PUBLIC_BACKEND_URL", "SAP_B1_BACKEND_URL", "KPIS_APP_URL"] as const
 let gatewayCalls: string[] = []
+let gatewayHeaders: Record<string, string>[] = []
 
 beforeEach(() => {
   for (const k of URL_ENV) delete process.env[k]
   gatewayCalls = []
+  gatewayHeaders = []
+  tokenSource.fn = async () => ""
   const realFetch = globalThis.fetch
   vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
     if (url.includes("/api/v1/")) {
       gatewayCalls.push(url)
+      gatewayHeaders.push({ ...(init?.headers as Record<string, string>) })
       // Sin gateway real: conexión rechazada, igual que un puerto sin listener.
       throw new TypeError("fetch failed")
     }
@@ -119,5 +144,57 @@ describe("URL del gateway en las tools SAP del chat", () => {
 
     expect(gatewayCalls.length).toBeGreaterThan(0)
     for (const url of gatewayCalls) expect(url.startsWith("http://alias-config.test:4100/api/v1/flexoimpresos")).toBe(true)
+  })
+})
+
+describe("identidad OIDC (x-ai4u-identity) en las tools SAP del chat", () => {
+  // Armado en runtime (nunca un literal con forma de secreto).
+  const TOKEN = ["tok", "oidc", "chat"].join(".")
+  // Lo que BackendClient mandaba antes de extraHeaders (v0.6.1), sin nada más.
+  const BASE_HEADERS = ["Content-Type", "X-API-Key", "x-mc-secret", "x-request-id", "x-consumer"].sort()
+
+  const expectBase = (h: Record<string, string>) => {
+    expect(h["X-API-Key"]).toBe("test-sap-key")
+    expect(h["x-consumer"]).toBe("sap-b1-chat")
+    expect(h["x-mc-secret"]).toBe("test-internal-secret-backend-url")
+    expect(typeof h["x-request-id"]).toBe("string")
+  }
+
+  it("con token: cada llamada de BackendClient lleva x-ai4u-identity sin tocar auth ni trazabilidad", async () => {
+    process.env.SAP_BACKEND_URL = "http://canonico.test:4100"
+    const audiences: string[] = []
+    tokenSource.fn = async (o) => {
+      audiences.push(o.audience)
+      return TOKEN
+    }
+
+    await runTurn()
+
+    expect(gatewayHeaders.length).toBeGreaterThan(0)
+    for (const h of gatewayHeaders) {
+      expectBase(h)
+      expect(h["x-ai4u-identity"]).toBe(TOKEN)
+      expect(Object.keys(h).sort()).toEqual([...BASE_HEADERS, "x-ai4u-identity"].sort())
+    }
+    // Se evalúa por request (no se cachea en el cliente): una resolución por llamada.
+    expect(audiences.length).toBe(gatewayHeaders.length)
+    for (const a of audiences) expect(a).toBe("https://sap-b1-backend.ai4u")
+  })
+
+  it.each([
+    ["error del intercambio", async () => Promise.reject(new Error("sin contexto OIDC"))],
+    ["timeout", () => new Promise<string>(() => {})],
+    ["token vacío", async () => ""],
+  ])("sin token (%s): las llamadas salen idénticas a antes", async (_caso, fn) => {
+    process.env.SAP_BACKEND_URL = "http://canonico.test:4100"
+    tokenSource.fn = fn as (o: { audience: string }) => Promise<string>
+
+    await runTurn()
+
+    expect(gatewayHeaders.length).toBeGreaterThan(0)
+    for (const h of gatewayHeaders) {
+      expectBase(h)
+      expect(Object.keys(h).sort()).toEqual(BASE_HEADERS)
+    }
   })
 })
