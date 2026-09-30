@@ -44,7 +44,7 @@ La API key de SAP **nunca** llega al cliente ni a la URL. El flujo:
 |---|---|
 | `MISSION_CONTROL_SECRET` | Valida tokens SSO de MC (mismo valor que en MC) |
 | `{TENANT}_SAP_API_KEY` | API key que el chat envía al backend (ej: `TAMAPRINT_SAP_API_KEY`) |
-| `NEXT_PUBLIC_BACKEND_URL` | URL del sap-b1-backend (default `:4100`) |
+| `SAP_BACKEND_URL` | URL del sap-b1-backend. En Vercel es una **Shared Env Var del team** (no hace falta copia propia en el proyecto). La misma URL la usan `/api/me` y `BackendClient` (se le pasa como `baseUrl`). `BACKEND_URL` / `NEXT_PUBLIC_BACKEND_URL` son **alias legados** (se aceptan con aviso). En local, sin ninguna, `http://localhost:4100`; en producción, sin ninguna → 503 |
 | `CHANGELOG_URL` | URL del changelog del proyecto |
 | `SUPABASE_URL` | URL del proyecto Supabase donde se guarda el historial (`NEXT_PUBLIC_SUPABASE_URL` sirve de respaldo; no es secreta) |
 | `SUPABASE_SERVICE_ROLE_KEY` | **Secreta, solo servidor.** Sin ella la persistencia de `chat_sessions`/`chat_messages`/`chat_tool_calls` queda deshabilitada (y `platform_logs` lo avisa una vez). Se usa service role porque esas tablas tienen RLS sin políticas |

@@ -203,11 +203,13 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
     return Response.json({ error: "Formato de mensajes inválido." }, { status: 400 })
   }
 
-  // Sin URL del gateway en Production, las tools SAP irían en silencio a localhost
-  // (BackendClient de @ai4u/contracts tiene su propio default): se corta ANTES de
-  // abrir el stream con 503 genérico + log ERROR, en vez de un turno con tools rotas.
+  // Sin URL del gateway en Production se corta ANTES de abrir el stream con 503
+  // genérico + log ERROR, en vez de un turno con tools SAP rotas. La URL resuelta se
+  // le pasa explícita a BackendClient (`baseUrl`) para que las tools y /api/me usen
+  // exactamente la misma fuente: SAP_BACKEND_URL (alias legados vía @ai4u/config).
+  let backendUrl: string
   try {
-    getBackendUrl()
+    backendUrl = getBackendUrl()
   } catch (err) {
     const unavailable = sapBackendUnavailableResponse(err)
     if (!unavailable) throw err
@@ -217,7 +219,11 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
 
   // x-request-id = requestId de este request del chat: une el log del chat, el del
   // backend (su middleware lo reusa) y chat_tool_calls. x-consumer atribuye el tráfico.
-  const client = new BackendClient(tenantId, apiKey, { requestId: apiCtx.requestId, consumer: "sap-b1-chat" })
+  const client = new BackendClient(tenantId, apiKey, {
+    baseUrl: backendUrl,
+    requestId: apiCtx.requestId,
+    consumer: "sap-b1-chat",
+  })
 
   // Model selection
   const textOf = (m: ModelMessage): string =>

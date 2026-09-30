@@ -1,7 +1,7 @@
 /**
  * Lectura de la configuración hacia el gateway SAP (`sap-b1-backend`), el ÚNICO
  * borde con SAP B1. Solo resuelve URL y llave: las llamadas SAP del chat van por
- * `BackendClient` de @ai4u/contracts (que lee su propia URL; ver README del PR).
+ * `BackendClient` de @ai4u/contracts, que recibe esta misma URL como `baseUrl`.
  *
  * Contrato de env Ai4U (fase 1):
  *   - URL: SAP_BACKEND_URL → alias BACKEND_URL, NEXT_PUBLIC_BACKEND_URL (con aviso).
