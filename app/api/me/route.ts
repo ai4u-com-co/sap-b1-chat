@@ -1,4 +1,5 @@
 import { withApiHandler, type ApiContext } from "@ai4u/platform/http"
+import { getGatewayIdentityHeaders } from "@ai4u/platform/gateway-identity"
 import { getApiKey, getTenantId } from "@/app/lib/session"
 import { getBackendUrl, sapBackendUnavailableResponse } from "@/lib/sap-gateway"
 
@@ -11,7 +12,8 @@ export const GET = withApiHandler(async (_req: Request, apiCtx: ApiContext) => {
 
   try {
     const res = await fetch(`${getBackendUrl()}/api/v1/me`, {
-      headers: { "X-API-Key": apiKey },
+      // + identidad OIDC (`x-ai4u-identity`, Fase 3) si hay token; fail-open, la auth sigue siendo X-API-Key.
+      headers: { "X-API-Key": apiKey, ...(await getGatewayIdentityHeaders()) },
       cache: "no-store",
     })
     if (res.ok) {
