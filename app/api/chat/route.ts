@@ -30,6 +30,7 @@ import { ENTITY_MAP } from "@ai4u/contracts"
 import { buildStaticSystemPrompt, buildSapContextSection, buildFechaActual, type CatalogEntry } from "@/lib/chat/system-prompt"
 import { fetchSapContext } from "@/lib/chat/sap-context"
 import { getTenantBackend } from "@/lib/tenant-backends"
+import { getBackendUrl, sapBackendUnavailableResponse } from "@/lib/sap-gateway"
 import { fetchDocumentoConFallback } from "@/lib/chat/obtener-documento"
 import { fetchListarRegistrosConFallback } from "@/lib/chat/listar-registros"
 import { SCHEMA_DOCUMENTED_TABLES, findUndiscoveredTables } from "@/lib/chat/sql-schema-gate"
@@ -200,6 +201,18 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
     modelMessages = await convertToModelMessages(body.messages as UIMessage[])
   } catch {
     return Response.json({ error: "Formato de mensajes inválido." }, { status: 400 })
+  }
+
+  // Sin URL del gateway en Production, las tools SAP irían en silencio a localhost
+  // (BackendClient de @ai4u/contracts tiene su propio default): se corta ANTES de
+  // abrir el stream con 503 genérico + log ERROR, en vez de un turno con tools rotas.
+  try {
+    getBackendUrl()
+  } catch (err) {
+    const unavailable = sapBackendUnavailableResponse(err)
+    if (!unavailable) throw err
+    apiCtx.log.error({ err, tenantId }, "chat: SAP_BACKEND_URL no configurada")
+    return unavailable
   }
 
   // x-request-id = requestId de este request del chat: une el log del chat, el del

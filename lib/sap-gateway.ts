@@ -10,10 +10,20 @@
 import { getGatewayApiKey, readEnv, type EnvSource } from "@ai4u/config/env"
 
 /**
- * Fallback histórico cuando no hay URL configurada. PELIGROSO en producción (apunta a
- * localhost); se conserva para no cambiar comportamiento en este PR (fase 1).
+ * URL del gateway en local. SOLO conveniencia para preview/development: en Production
+ * de Vercel (`VERCEL_ENV=production`) nunca se usa — si falta SAP_BACKEND_URL (y sus
+ * alias) `getBackendUrl` lanza `SapBackendUrlMissingError` en vez de apuntar en
+ * silencio a localhost (conexión rechazada).
  */
 export const LOCAL_GATEWAY_URL = "http://localhost:4100"
+
+/** Falta la URL del gateway en Production. El handler la convierte en 503 genérico. */
+export class SapBackendUrlMissingError extends Error {
+  constructor() {
+    super("SAP_BACKEND_URL no configurada")
+    this.name = "SapBackendUrlMissingError"
+  }
+}
 
 /**
  * Valor histórico de X-API-Key cuando el tenant no tiene llave propia: el gateway
@@ -21,8 +31,25 @@ export const LOCAL_GATEWAY_URL = "http://localhost:4100"
  */
 export const S2S_AUTH_PLACEHOLDER = "S2S_AUTH"
 
+/**
+ * URL base del gateway: SAP_BACKEND_URL → alias (con aviso). Sin ninguna:
+ * en Production lanza `SapBackendUrlMissingError`; en preview/development, localhost.
+ */
 export function getBackendUrl(env?: EnvSource): string {
-  return readEnv("SAP_BACKEND_URL", env) ?? LOCAL_GATEWAY_URL
+  const url = readEnv("SAP_BACKEND_URL", env)
+  if (url) return url
+  if ((env ?? process.env).VERCEL_ENV === "production") throw new SapBackendUrlMissingError()
+  return LOCAL_GATEWAY_URL
+}
+
+/**
+ * Respuesta 503 con mensaje genérico si `err` es la falta de URL del gateway; si no, null
+ * (el handler sigue con su respuesta de error de siempre). Uso en el catch:
+ * `return sapBackendUnavailableResponse(err) ?? Response.json(..., { status: 500 })`.
+ */
+export function sapBackendUnavailableResponse(err: unknown): Response | null {
+  if (!(err instanceof SapBackendUrlMissingError)) return null
+  return Response.json({ error: "Servicio SAP no disponible temporalmente" }, { status: 503 })
 }
 
 /** Llave X-API-Key del tenant de la sesión, o el placeholder "S2S_AUTH" si no tiene. */

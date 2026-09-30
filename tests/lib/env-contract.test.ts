@@ -4,7 +4,14 @@
  * literales con forma de secreto: el repo puede pasar por gitleaks).
  */
 import { describe, it, expect } from "vitest"
-import { getBackendUrl, resolveGatewayApiKey, LOCAL_GATEWAY_URL, S2S_AUTH_PLACEHOLDER } from "@/lib/sap-gateway"
+import {
+  getBackendUrl,
+  resolveGatewayApiKey,
+  LOCAL_GATEWAY_URL,
+  S2S_AUTH_PLACEHOLDER,
+  SapBackendUrlMissingError,
+  sapBackendUnavailableResponse,
+} from "@/lib/sap-gateway"
 import { verifyInternalSecret, getOutgoingInternalSecret } from "@/lib/internal-auth"
 import { resolveAnthropicKey } from "@/lib/chat/anthropic-errors"
 
@@ -20,8 +27,32 @@ describe("gateway: URL", () => {
   it("solo NEXT_PUBLIC_BACKEND_URL (lo que hay en Vercel prod) resuelve por alias", () => {
     expect(getBackendUrl({ NEXT_PUBLIC_BACKEND_URL: "https://p.test" })).toBe("https://p.test")
   })
-  it("sin nada cae al fallback histórico localhost", () => {
+  it("development sin nada → localhost (conveniencia local)", () => {
     expect(getBackendUrl({})).toBe(LOCAL_GATEWAY_URL)
+    expect(getBackendUrl({ VERCEL_ENV: "development" })).toBe(LOCAL_GATEWAY_URL)
+  })
+  it("preview sin nada → localhost (conveniencia local)", () => {
+    expect(getBackendUrl({ VERCEL_ENV: "preview" })).toBe(LOCAL_GATEWAY_URL)
+  })
+  it("production sin nada → lanza SapBackendUrlMissingError (nunca localhost)", () => {
+    expect(() => getBackendUrl({ VERCEL_ENV: "production" })).toThrow(SapBackendUrlMissingError)
+    expect(() => getBackendUrl({ VERCEL_ENV: "production" })).toThrow("SAP_BACKEND_URL no configurada")
+  })
+  it("production con URL (canónico o alias) → la URL", () => {
+    expect(getBackendUrl({ VERCEL_ENV: "production", SAP_BACKEND_URL: "https://c.test" })).toBe("https://c.test")
+    expect(getBackendUrl({ VERCEL_ENV: "production", NEXT_PUBLIC_BACKEND_URL: "https://p.test" })).toBe("https://p.test")
+  })
+})
+
+describe("gateway: sapBackendUnavailableResponse", () => {
+  it("SapBackendUrlMissingError → 503 con mensaje genérico", async () => {
+    const res = sapBackendUnavailableResponse(new SapBackendUrlMissingError())
+    expect(res?.status).toBe(503)
+    expect(await res!.json()).toEqual({ error: "Servicio SAP no disponible temporalmente" })
+  })
+  it("otro error → null (el handler conserva su respuesta)", () => {
+    expect(sapBackendUnavailableResponse(new Error("otro"))).toBeNull()
+    expect(sapBackendUnavailableResponse(undefined)).toBeNull()
   })
 })
 
