@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect } from "vitest"
 
 /**
  * FLX-082 — regresión de causa raíz confirmada:
@@ -13,15 +13,24 @@ import { describe, it, expect, vi } from "vitest"
  *   detalle real — exactamente lo que se vio en producción el 13/08/2026
  *   08:39:47 UTC para el tenant flexo (AI_NoOutputGeneratedError perdido).
  *
- * Este test mockea el modelo de Anthropic (vía `@ai-sdk/anthropic`) para que
- * el stream falle a mitad de camino con un error de mensaje distintivo, invoca
- * el handler POST real de app/api/chat/route.ts, y verifica que el part de
- * error emitido en el UI message stream contenga ese mensaje — no el genérico.
+ * Este test mockea el modelo subyacente para que el stream falle a mitad de
+ * camino con un error de mensaje distintivo, invoca el handler POST real de
+ * app/api/chat/route.ts, y verifica que el part de error emitido en el UI
+ * message stream contenga ese mensaje — no el genérico.
  *
  * NO se mockea `streamText`: se deja correr la implementación real de `ai`
  * (incluyendo el propio `toUIMessageStream` que route.ts llama sin `onError`),
  * y solo se sustituye el modelo subyacente por un MockLanguageModelV3 de
  * `ai/test`, para que la reproducción sea fiel al mecanismo diagnosticado.
+ *
+ * Migración a AI Gateway (2026-07-31): route.ts ya no llama
+ * `createAnthropic({apiKey})` — pasa un string "anthropic/<modelo>" a
+ * `streamText`, que la librería `ai` resuelve vía el PROVIDER GLOBAL
+ * (`globalThis.AI_SDK_DEFAULT_PROVIDER`, default = Vercel AI Gateway real).
+ * Mockear `@ai-sdk/anthropic` ya NO intercepta nada — el string se resuelve
+ * igual y la llamada sale de verdad contra el Gateway (y falla por falta de
+ * créditos en este entorno de test). El mock correcto es reemplazar el
+ * provider global.
  */
 
 const DISTINCTIVE_ERROR = "overloaded_error: test simulation FLX-082"
@@ -36,23 +45,25 @@ process.env.SAP_BACKEND_URL = "http://127.0.0.1:4100"
 delete process.env.NEXT_PUBLIC_SUPABASE_URL
 delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-vi.mock("@ai-sdk/anthropic", async () => {
-  const { MockLanguageModelV3, convertArrayToReadableStream } = await import("ai/test")
-  const mockModel = new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: convertArrayToReadableStream([
-        { type: "stream-start", warnings: [] },
-        // Simula el fallo real de Anthropic a mitad del stream (overloaded /
-        // No output generated / lo que sea) — el mecanismo bajo prueba no
-        // depende de CUÁL error sea, sino de que route.ts no lo preserva.
-        { type: "error", error: new Error(DISTINCTIVE_ERROR) },
-      ]),
-    }),
-  })
-  return {
-    createAnthropic: () => () => mockModel,
-  }
+const { MockLanguageModelV3, convertArrayToReadableStream } = await import("ai/test")
+const mockModel = new MockLanguageModelV3({
+  doStream: async () => ({
+    stream: convertArrayToReadableStream([
+      { type: "stream-start", warnings: [] },
+      // Simula el fallo real de Anthropic a mitad del stream (overloaded /
+      // No output generated / lo que sea) — el mecanismo bajo prueba no
+      // depende de CUÁL error sea, sino de que route.ts no lo preserva.
+      { type: "error", error: new Error(DISTINCTIVE_ERROR) },
+    ]),
+  }),
 })
+// Provider global: intercepta CUALQUIER string "provider/modelo" que route.ts
+// le pase a streamText, sin importar el id — ver nota de migración arriba.
+// La librería `ai` llama `getGlobalProvider().languageModel(id)` (no invoca el
+// provider como función), así que el mock debe exponer ese método.
+;(globalThis as { AI_SDK_DEFAULT_PROVIDER?: unknown }).AI_SDK_DEFAULT_PROVIDER = {
+  languageModel: () => mockModel,
+}
 
 describe("FLX-082: el error real de Anthropic se pierde tras 'An error occurred.'", () => {
   it("propaga el mensaje real del error de streaming al cliente, no el genérico de la librería", async () => {

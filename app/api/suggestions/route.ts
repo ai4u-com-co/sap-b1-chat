@@ -1,4 +1,3 @@
-import { createAnthropic } from "@ai-sdk/anthropic"
 import { withApiHandler, type ApiContext } from "@ai4u/platform/http"
 import { generateText, Output } from "ai"
 import { z } from "zod"
@@ -7,6 +6,7 @@ import { getTenantBackend } from "@/lib/tenant-backends"
 import { getApiKey, getTenantId } from "@/app/lib/session"
 import { verifyInternalSecret } from "@/lib/internal-auth"
 import { resolveAnthropicKey, classifyAnthropicError, anthropicErrorLogFields } from "@/lib/chat/anthropic-errors"
+import { MODELS } from "@/lib/chat/models"
 
 // ─── /api/suggestions ────────────────────────────────────────────────────────
 // Genera 4 preguntas estratégicas de negocio para el tenant activo mediante una
@@ -85,12 +85,12 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
     return Response.json({ questions: MAGDALENA_SUGGESTIONS, generatedAt: Date.now(), source: "static" })
   }
 
+  // NOTA (migración a AI Gateway): ya no se necesita una API key de Anthropic
+  // por tenant para llamar al modelo (ver app/api/chat/route.ts) — se retira el
+  // gate "sin key → fallback estático". `resolveAnthropicKey` se conserva SOLO
+  // para el fingerprint de diagnóstico que sigue usando `anthropicErrorLogFields`
+  // en el catch de abajo.
   const resolvedKey = resolveAnthropicKey(tenantId)
-  const anthropicKey = resolvedKey.key
-  if (!anthropicKey) {
-    apiCtx.log.warn({ tenantId, keyEnv: resolvedKey.envName }, "suggestions: sin API key de Anthropic, usando fallback")
-    return Response.json({ questions: FALLBACK, generatedAt: Date.now(), source: "fallback" })
-  }
 
   const { tenantName } = body as { tenantName?: string }
   const resolvedTenant = tenantName?.trim() || tenantId
@@ -100,9 +100,9 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   })
 
   try {
-    const anthropic = createAnthropic({ apiKey: anthropicKey })
     const { output } = await generateText({
-      model: anthropic("claude-haiku-4-5"),
+      // Enrutado por Vercel AI Gateway (OIDC) — ver nota en app/api/chat/route.ts.
+      model: MODELS["claude-haiku-4.5"].gatewaySlug,
       output: Output.object({
         schema: z.object({
           questions: z.array(z.string()).describe("Exactamente 4 preguntas estratégicas"),

@@ -16,6 +16,14 @@ import { describe, it, expect, vi } from "vitest"
  *      tenant y CONSERVA el texto crudo de Anthropic (no se pierde información);
  *   2. el log de error lleva `anthropicCode: "ANTHROPIC_BILLING"`, status 400,
  *      `keyFingerprint` con formato del Console y `keyEnv`.
+ *
+ * Migración a AI Gateway (2026-07-31): route.ts ya no llama
+ * `createAnthropic({apiKey})` — el mock del modelo se hace vía el PROVIDER
+ * GLOBAL (`globalThis.AI_SDK_DEFAULT_PROVIDER`, ver chat-route-error-text.test.ts
+ * para el detalle). `TAMAPRINT_ANTHROPIC_API_KEY` se sigue seteando porque
+ * `resolveAnthropicKey`/`anthropicErrorLogFields` (clasificación de errores)
+ * siguen leyendo esa env var para el fingerprint de diagnóstico — aunque ya NO
+ * se use para autenticar contra Anthropic (eso lo resuelve el Gateway solo).
  */
 
 const BILLING_MSG =
@@ -44,27 +52,28 @@ vi.mock("@ai4u/platform/http", async (importOriginal) => {
   }
 })
 
-vi.mock("@ai-sdk/anthropic", async () => {
-  const { MockLanguageModelV3, convertArrayToReadableStream } = await import("ai/test")
-  const { APICallError } = await import("@ai-sdk/provider")
-  const billingError = new APICallError({
-    message: BILLING_MSG,
-    url: "https://api.anthropic.com/v1/messages",
-    requestBodyValues: {},
-    statusCode: 400,
-    responseBody: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: BILLING_MSG } }),
-    isRetryable: false,
-  })
-  const mockModel = new MockLanguageModelV3({
-    doStream: async () => ({
-      stream: convertArrayToReadableStream([
-        { type: "stream-start", warnings: [] },
-        { type: "error", error: billingError },
-      ]),
-    }),
-  })
-  return { createAnthropic: () => () => mockModel }
+const { MockLanguageModelV3, convertArrayToReadableStream } = await import("ai/test")
+const { APICallError } = await import("@ai-sdk/provider")
+const billingError = new APICallError({
+  message: BILLING_MSG,
+  url: "https://api.anthropic.com/v1/messages",
+  requestBodyValues: {},
+  statusCode: 400,
+  responseBody: JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: BILLING_MSG } }),
+  isRetryable: false,
 })
+const mockModel = new MockLanguageModelV3({
+  doStream: async () => ({
+    stream: convertArrayToReadableStream([
+      { type: "stream-start", warnings: [] },
+      { type: "error", error: billingError },
+    ]),
+  }),
+})
+// Provider global: ver nota de migración arriba y chat-route-error-text.test.ts.
+;(globalThis as { AI_SDK_DEFAULT_PROVIDER?: unknown }).AI_SDK_DEFAULT_PROVIDER = {
+  languageModel: () => mockModel,
+}
 
 describe("incidente 2026-08-23: 400 billing de Anthropic", () => {
   it("el usuario recibe mensaje en español con tenant + crudo, y el log queda clasificado con fingerprint de key", async () => {
@@ -111,9 +120,13 @@ describe("incidente 2026-08-23: 400 billing de Anthropic", () => {
     // La key completa jamás va al log
     expect(JSON.stringify(logged)).not.toContain(FAKE_KEY)
 
-    // 3. El log de resolución de key salió al inicio del request
-    const resolved = logged.find((l) => l.msg.includes("key de Anthropic resuelta"))
+    // 3. El aviso de key-por-tenant-obsoleta salió al inicio del request (ya no
+    //    es "key de Anthropic resuelta" — desde la migración a AI Gateway, que
+    //    exista TAMAPRINT_ANTHROPIC_API_KEY es una anomalía a limpiar, no el
+    //    camino esperado; ver nota de migración en app/api/chat/route.ts).
+    const resolved = logged.find((l) => l.msg.includes("YA NO SE USA"))
     expect(resolved).toBeTruthy()
+    expect((resolved!.level)).toBe("warn")
     expect((resolved!.data as Record<string, unknown>).keyFingerprint).toBe("sk-ant-api03-Ens…1gAA")
   })
 })

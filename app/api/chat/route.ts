@@ -1,4 +1,3 @@
-import { createAnthropic } from "@ai-sdk/anthropic"
 import { withApiHandler, type ApiContext } from "@ai4u/platform/http"
 import { flushLogs } from "@ai4u/platform/logger"
 import { supabase } from "@/lib/supabase"
@@ -291,24 +290,25 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
   // Cualquier otra tabla exige pasar por `descubrir_esquema` primero.
   const discoveredTables = new Set<string>(SCHEMA_DOCUMENTED_TABLES)
 
-  // Anthropic key per tenant. Se loguea de qué env var salió y su fingerprint
-  // (prefijo+sufijo, formato del Console) para poder saber a qué ORGANIZACIÓN
-  // de Anthropic pertenece sin exponer el secreto — ver lib/chat/anthropic-errors.ts.
+  // NOTA (migración a AI Gateway, ver más abajo en streamText): ya NO se usa
+  // `resolvedKey.key` para autenticar — el Gateway resuelve auth solo (OIDC/
+  // AI_GATEWAY_API_KEY). Se conserva `resolveAnthropicKey`/su logging tal cual
+  // porque `anthropicErrorLogFields` (lib/chat/anthropic-errors.ts, incidente
+  // 2026-08-23) lo sigue usando en el onError de abajo para diagnóstico —
+  // aunque post-migración toda key por tenant quedará en "none" (esperado:
+  // ya no hace falta setear {TENANT}_ANTHROPIC_API_KEY).
   const resolvedKey = resolveAnthropicKey(tenantId)
   if (resolvedKey.source === "none") {
-    apiCtx.log.error(
+    apiCtx.log.info(
       { tenantId, keyEnv: resolvedKey.envName },
-      "chat: no hay API key de Anthropic configurada para el tenant"
+      "chat: sin API key de Anthropic por tenant (esperado con AI Gateway)"
     )
   } else {
-    apiCtx.log.info(
+    apiCtx.log.warn(
       { tenantId, keySource: resolvedKey.source, keyEnv: resolvedKey.envName, keyFingerprint: resolvedKey.fingerprint, selectedModel },
-      "chat: key de Anthropic resuelta"
+      "chat: hay una API key de Anthropic por tenant configurada pero YA NO SE USA (se migró a AI Gateway) — se puede retirar de Vercel"
     )
   }
-  const anthropicKey = resolvedKey.key
-
-  const anthropic = createAnthropic({ apiKey: anthropicKey })
 
   let writer!: UIMessageStreamWriter
 
@@ -359,7 +359,14 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
       ]
 
       const result = streamText({
-        model: anthropic(modelCap.apiSlug),
+        // Enrutado por Vercel AI Gateway (OIDC) en vez de createAnthropic +
+        // API key directa. Un string "provider/model" enruta automáticamente
+        // — sin gateway() ni token manual: el AI SDK resuelve el auth solo
+        // (AI_GATEWAY_API_KEY si existe, si no VERCEL_OIDC_TOKEN). Verificado
+        // que providerOptions.anthropic.thinking/effort se preserva igual
+        // enrutando por gateway (docs: vercel.com/docs/ai-gateway/models-and-
+        // providers/reasoning) — no hace falta tocar esa parte.
+        model: modelCap.gatewaySlug,
         messages: [...systemMessages, ...allMessages],
         stopWhen: stepCountIs(maxSteps),
         onFinish: async ({ text, steps }) => {
@@ -405,6 +412,15 @@ export const POST = withApiHandler(async (req: Request, apiCtx: ApiContext) => {
           anthropic: {
             ...(thinking ? { thinking } : {}),
             ...(effort ? { effort } : {}),
+          },
+          // Con la migración a Gateway se perdió la separación por API key
+          // propia de Anthropic por tenant (${TENANT}_ANTHROPIC_API_KEY) — todo
+          // pasa ahora por el gateway único del proyecto Vercel. Se reemplaza
+          // por tags/user para que el dashboard de AI Gateway pueda desglosar
+          // costo por tenant (Usage & Budgets → filtrar por tag).
+          gateway: {
+            user: tenantId,
+            tags: [`tenant:${tenantId}`, "feature:sap-chat"],
           },
         },
         tools: {
